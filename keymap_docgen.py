@@ -299,6 +299,45 @@ MOD_PREFIX = {
     'LG': '⌘', 'RG': '⌘',
 }
 
+# マウス／Bluetooth／出力の表示ラベル
+MOUSE_BUTTON_LABELS = {
+    'LCLK': '🖱左', 'MB1': '🖱左',
+    'RCLK': '🖱右', 'MB2': '🖱右',
+    'MCLK': '🖱中', 'MB3': '🖱中',
+    'MB4': '🖱戻', 'MB5': '🖱進',
+}
+
+MOUSE_MOVE_LABELS = {
+    'MOVE_UP': '🖱↑', 'MOVE_DOWN': '🖱↓',
+    'MOVE_LEFT': '🖱←', 'MOVE_RIGHT': '🖱→',
+    'MOVE_X': '🖱X', 'MOVE_Y': '🖱Y',
+}
+
+MOUSE_SCROLL_LABELS = {
+    'SCRL_UP': '🖱⇑', 'SCRL_DOWN': '🖱⇓',
+    'SCRL_LEFT': '🖱⇐', 'SCRL_RIGHT': '🖱⇒',
+}
+
+BT_LABELS = {
+    'BT_CLR': 'BT解除', 'BT_CLR_ALL': 'BT全解除',
+    'BT_NXT': 'BT次', 'BT_PRV': 'BT前',
+}
+
+OUT_LABELS = {
+    'OUT_TOG': '出力切替', 'OUT_USB': 'USB出力', 'OUT_BLE': 'BLE出力',
+}
+
+
+def format_mouse(head: str, arg: str) -> str:
+    """&mkp / &mmv / &msc のパラメータを読みやすいラベルに変換する。"""
+    base = arg.strip().split('(')[0].strip()
+    table = {
+        '&mkp': MOUSE_BUTTON_LABELS,
+        '&mmv': MOUSE_MOVE_LABELS,
+        '&msc': MOUSE_SCROLL_LABELS,
+    }.get(head, {})
+    return table.get(base, f'🖱{base}')
+
 
 def format_keycode(kc: str) -> str:
     kc = kc.strip()
@@ -390,6 +429,25 @@ def resolve(binding: str, behaviors: dict, macros: dict, op: str, depth: int = 0
     if m:
         layer = m.group(1)
         return (f'⇒{layer_display(layer)}', f'&to {layer_display(layer)}')
+
+    parts = b.split()
+    head = parts[0] if parts else ''
+
+    # &mkp / &mmv / &msc (マウスボタン・移動・スクロール)
+    if head in ('&mkp', '&mmv', '&msc') and len(parts) >= 2:
+        arg = ' '.join(parts[1:])
+        return (format_mouse(head, arg), f'{head} {arg}')
+
+    # &bt (Bluetooth)
+    if head == '&bt' and len(parts) >= 2:
+        action = parts[1]
+        if action == 'BT_SEL' and len(parts) >= 3:
+            return (f'BT{parts[2]}', f'&bt BT_SEL {parts[2]}')
+        return (BT_LABELS.get(action, action), b)
+
+    # &out (出力先切替)
+    if head == '&out' and len(parts) >= 2:
+        return (OUT_LABELS.get(parts[1], parts[1]), b)
 
     # Custom behavior / macro reference like &mm_vim_g, &td_vim_d, &macro_vim_dd
     if b.startswith('&'):
@@ -1091,6 +1149,9 @@ HTML_STYLE = """\
   .key.none { background: #f0f1f2; border-style: dashed; opacity: .45; box-shadow: none; }
   .key.trans { background: #f7f8fa; }
   .key.trans .kt { color: #8a939b; font-weight: 400; }
+  .key.mouse { background: #eafbea; border-color: #8fd28f; }
+  .key.bt { background: #eaf1fb; border-color: #8fb4e0; }
+  .key.out { background: #f3eafb; border-color: #b48fe0; }
 """
 
 
@@ -1217,6 +1278,12 @@ def _visual_key_html(idx: int, binding: str, g: dict, scale: float, unit: float,
         cls += ' none'
     elif b == '&trans':
         cls += ' trans'
+    elif b.startswith(('&mkp', '&mmv', '&msc')):
+        cls += ' mouse'
+    elif b.startswith('&bt'):
+        cls += ' bt'
+    elif b.startswith('&out'):
+        cls += ' out'
 
     # Tooltip: every operation that resolves to something, plus the raw binding.
     tip_lines = [f'{op}: {actions[op]}' for op in OPS if actions[op]]
