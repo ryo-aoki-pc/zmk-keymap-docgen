@@ -524,6 +524,13 @@ def get_row_layout(total: int) -> list[tuple[int, int]]:
 
 GAP = 'GAP'  # sentinel marking a blank split-gap display column
 
+# Visual (physical) layout figure: rendered pixels per physical key unit, and the
+# inset that keeps adjacent key boxes from touching. A "unit" is auto-detected as
+# the smallest gap between distinct coordinates (so both millimetre-scale DTS
+# coordinates and 1-per-column logical layouts render at a sensible size).
+KEY_PX = 52
+KEY_GAP_PX = 4
+
 
 def load_physical_layout(path: Path):
     """Parse a ZMK physical-layout JSON into ordered per-key data.
@@ -531,34 +538,52 @@ def load_physical_layout(path: Path):
     The JSON's `layout` array is in the same order as the keymap bindings, so
     entry i describes binding i. Each entry carries `x`/`y` (physical position)
     and may carry an optional `label` (that key's DEFAULT-layer identity, e.g.
-    "Q"), which is how the tool stays free of keyboard-specific data.
+    "Q"), which is how the tool stays free of keyboard-specific data. Entries
+    may also carry `w`/`h` (key size) and `r`/`rx`/`ry` (rotation in degrees and
+    its origin) — all optional, used only by the visual layout figure.
 
-    Returns a (coords, labels) pair:
+    Returns a (coords, labels, geom) triple:
       - coords: list of (x, y) floats, or None when the file is missing or
         cannot be parsed (caller falls back to keymap-order rendering).
       - labels: {binding_index: label} for every entry that provides a label.
+      - geom: list of per-key dicts {'x','y','w','h','r','rx','ry'} (w/h/r/rx/ry
+        are None when absent) in binding order, or None alongside coords=None.
     """
     try:
         data = json.loads(Path(path).read_text(encoding='utf-8'))
     except (OSError, ValueError):
-        return None, {}
+        return None, {}, None
     layouts = data.get('layouts') if isinstance(data, dict) else None
     if not layouts:
-        return None, {}
+        return None, {}, None
     layout = layouts.get('default_layout') or next(iter(layouts.values()))
     entries = layout.get('layout') if isinstance(layout, dict) else None
     if not entries:
-        return None, {}
+        return None, {}, None
     coords: list[tuple[float, float]] = []
     labels: dict[int, str] = {}
+    geom: list[dict] = []
+
+    def opt_float(e, key):
+        v = e.get(key) if isinstance(e, dict) else None
+        try:
+            return None if v is None else float(v)
+        except (TypeError, ValueError):
+            return None
+
     for i, e in enumerate(entries):
         try:
-            coords.append((float(e['x']), float(e['y'])))
+            x, y = float(e['x']), float(e['y'])
         except (KeyError, TypeError, ValueError):
-            return None, {}
+            return None, {}, None
+        coords.append((x, y))
+        geom.append({'x': x, 'y': y,
+                     'w': opt_float(e, 'w'), 'h': opt_float(e, 'h'),
+                     'r': opt_float(e, 'r'),
+                     'rx': opt_float(e, 'rx'), 'ry': opt_float(e, 'ry')})
         if isinstance(e, dict) and e.get('label') is not None:
             labels[i] = str(e['label'])
-    return (coords or None), labels
+    return (coords or None), labels, (geom or None)
 
 
 def build_grid(coords: list[tuple[float, float]]):
@@ -959,6 +984,33 @@ HTML_STYLE = """\
     font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   }
   tr[style] code { background: rgba(0,0,0,.06); }
+  /* Visual physical-layout figure: keys absolutely positioned by their real
+     coordinates so the rendering matches the board (split gap, column stagger,
+     rotation, …). */
+  .kb { position: relative; margin: 1em 0 2.5em; }
+  .key {
+    position: absolute;
+    box-sizing: border-box;
+    border: 1px solid #b9c0c8;
+    border-radius: 6px;
+    background: #fbfcfd;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+    padding: 2px;
+    text-align: center;
+    font-family: -apple-system, "Segoe UI", "Noto Sans JP", Meiryo, sans-serif;
+    line-height: 1.1;
+    cursor: default;
+  }
+  .key .kl { font-size: 8px; color: #8a939b; align-self: flex-start; max-width: 100%; overflow: hidden; }
+  .key .kt { font-size: 12px; font-weight: 600; color: #1f2328; max-width: 100%; overflow: hidden; }
+  .key .kh { font-size: 9px; color: #0969da; max-width: 100%; overflow: hidden; }
+  .key.none { background: #f0f1f2; border-style: dashed; opacity: .45; }
+  .key.trans { background: #f7f8fa; }
+  .key.trans .kt { color: #8a939b; font-weight: 400; }
 """
 
 
@@ -1039,9 +1091,85 @@ def _html_table_lines(header: list[str], rows: list[dict], css_class: str | None
     return _html_table_open(header, css_class) + _html_body_rows(rows) + _html_table_close()
 
 
+def _layout_unit(geom: list[dict]) -> float:
+    """Smallest positive gap between distinct x or y coordinates, used as the
+    physical key unit when a key carries no explicit w/h. Falls back to 1.0."""
+    def min_gap(vals: list[float]) -> float:
+        uniq = sorted(set(vals))
+        diffs = [b - a for a, b in zip(uniq, uniq[1:]) if b - a > 0]
+        return min(diffs) if diffs else float('inf')
+    unit = min(min_gap([g['x'] for g in geom]), min_gap([g['y'] for g in geom]))
+    return unit if unit != float('inf') else 1.0
+
+
+def _fmt_px(v: float) -> str:
+    """Format a pixel value: integers without a trailing '.0'."""
+    return f'{v:g}'
+
+
+def _visual_key_html(idx: int, binding: str, g: dict, scale: float, unit: float,
+                     behaviors: dict, macros: dict) -> str:
+    """Render one absolutely-positioned key box for the visual layout figure."""
+    w = (g['w'] if g['w'] is not None else unit) * scale - KEY_GAP_PX
+    h = (g['h'] if g['h'] is not None else unit) * scale - KEY_GAP_PX
+    left = g['x'] * scale
+    top = g['y'] * scale
+    style = (f'left:{_fmt_px(left)}px;top:{_fmt_px(top)}px;'
+             f'width:{_fmt_px(w)}px;height:{_fmt_px(h)}px')
+    if g['r']:
+        ox = ((g['rx'] if g['rx'] is not None else g['x']) - g['x']) * scale
+        oy = ((g['ry'] if g['ry'] is not None else g['y']) - g['y']) * scale
+        style += (f';transform:rotate({_fmt_px(g["r"])}deg)'
+                  f';transform-origin:{_fmt_px(ox)}px {_fmt_px(oy)}px')
+
+    actions = {op: _normalize_cell(resolve(binding, behaviors, macros, op)[0]) for op in OPS}
+    tap, hold = actions['タップ'], actions['ホールド']
+
+    b = binding.strip()
+    cls = 'key'
+    if b == '&none':
+        cls += ' none'
+    elif b == '&trans':
+        cls += ' trans'
+
+    # Tooltip: every operation that resolves to something, plus the raw binding.
+    tip_lines = [f'{op}: {actions[op]}' for op in OPS if actions[op]]
+    tip_lines.append(format_binding_for_display(binding))
+    tip = _html_text('\n'.join(tip_lines)).replace('"', '&quot;').replace('\n', '&#10;')
+
+    label = get_label(idx)
+    parts = [f'<div class="{cls}" style="{style}" title="{tip}">']
+    if b != '&none':
+        parts.append(f'<span class="kl">{_html_text(label)}</span>')
+    parts.append(f'<span class="kt">{_html_text(tap)}</span>')
+    # Show the hold action only when it is a distinct assignment (not just the
+    # tap value repeated), matching the table's "auto-derived" suppression.
+    if hold and hold not in _auto_forms(tap, 'ホールド'):
+        parts.append(f'<span class="kh">{_html_text(hold)}</span>')
+    parts.append('</div>')
+    return ''.join(parts)
+
+
+def _html_visual_layer(bindings: list[str], behaviors: dict, macros: dict,
+                       geom: list[dict]) -> list[str]:
+    """Render a layer as a visual keyboard figure (keys placed by real x/y/w/h).
+    Returns [] when no usable geometry is available for these bindings."""
+    if not geom or len(geom) != len(bindings):
+        return []
+    unit = _layout_unit(geom)
+    scale = KEY_PX / unit
+    width = max(((g['w'] if g['w'] is not None else unit) + g['x']) for g in geom) * scale
+    height = max(((g['h'] if g['h'] is not None else unit) + g['y']) for g in geom) * scale
+    out = [f'<div class="kb" style="width:{_fmt_px(width)}px;height:{_fmt_px(height)}px">']
+    for idx, (binding, g) in enumerate(zip(bindings, geom)):
+        out.append(_visual_key_html(idx, binding, g, scale, unit, behaviors, macros))
+    out.append('</div>')
+    return out
+
+
 def write_html(layers_data: list[tuple[str, list[str]]],
                behaviors: dict, macros: dict, output_path: Path,
-               grid, display_cols) -> None:
+               grid, display_cols, geom=None) -> None:
     """Generate one standalone HTML file.
     Single layer  => H1 layer title, then H2 動作 / H2 経路.
     Multi layers  => H1 top title, H2 動作 (each layer at H3), then H2 経路."""
@@ -1058,6 +1186,14 @@ def write_html(layers_data: list[tuple[str, list[str]]],
         body.append('<li>' + _html_inline('各 row セクション行に「キーラベル」と「バインディング (`&...`)」の 2 段表示でキー位置を示す。') + '</li>')
         body.append('<li>' + _html_inline('各表の左端 1 列が「操作」（タップ / ホールド / ダブルタップ / Shift+ / Ctrl+）または「Row N」見出し。') + '</li>')
         body.append('</ul>')
+        visual = _html_visual_layer(bindings, behaviors, macros, geom)
+        if visual:
+            body.append(f'<h2>{_html_inline("レイアウト図")}</h2>')
+            body.append('<p>' + _html_inline(
+                'キーを実機の物理配列どおりに配置。各キーは「ラベル / タップ動作 / (ホールド動作)」を表示し、'
+                '全操作（ダブルタップ / Shift+ / Ctrl+ など）はマウスオーバーのツールチップで確認できる。'
+            ) + '</p>')
+            body += visual
         for mode_label, mode in [('動作', 'action'), ('経路', 'path')]:
             body.append(f'<h2>{_html_inline(mode_label)}</h2>')
             header, rows = _build_layer_mode_table(bindings, behaviors, macros, mode,
@@ -1075,6 +1211,20 @@ def write_html(layers_data: list[tuple[str, list[str]]],
         body.append('<li>' + _html_inline('列は物理配列の左→右順。左右分割は中央の空列で分離する。') + '</li>')
         body.append('<li>' + _html_inline('各表の左端 1 列が「操作」（タップ / ホールド / ダブルタップ / Shift+ / Ctrl+）または「Row N」見出し。') + '</li>')
         body.append('</ul>')
+
+        # Visual physical-layout figure per layer (keys placed by real coordinates).
+        if geom is not None:
+            body.append(f'<h2>{_html_inline("レイアウト図")}</h2>')
+            body.append('<p>' + _html_inline(
+                '各レイヤーを実機の物理配列どおりに配置。各キーは「ラベル / タップ動作 / (ホールド動作)」を表示し、'
+                '全操作（ダブルタップ / Shift+ / Ctrl+ など）はマウスオーバーのツールチップで確認できる。'
+            ) + '</p>')
+            for layer_name, bindings in layers_data:
+                visual = _html_visual_layer(bindings, behaviors, macros, geom)
+                if not visual:
+                    continue
+                body.append(f'<h3>{_html_text(f"{layer_name} レイヤー")}</h3>')
+                body += visual
 
         # Positions that are `&none` in the DEFAULT layer are inactive and
         # hidden in every layer's table.
@@ -1170,7 +1320,7 @@ def main() -> int:
     # Physical layout drives the row/column arrangement to match the real board.
     total = len(layers_data[0][1]) if layers_data else 0
     layout_path = Path(args.layout) if args.layout else keymap_path.with_suffix('.json')
-    coords, labels = load_physical_layout(layout_path)
+    coords, labels, geom = load_physical_layout(layout_path)
     if coords and len(coords) == total:
         KEY_LABELS.clear()
         KEY_LABELS.update(labels)
@@ -1178,6 +1328,7 @@ def main() -> int:
         print(f'physical layout: {layout_path} ({len(coords)} keys)')
     else:
         grid, display_cols = legacy_grid(total)
+        geom = None
         if coords is None:
             print(f'note: physical layout not found at {layout_path}; using keymap order',
                   file=sys.stderr)
@@ -1200,7 +1351,7 @@ def main() -> int:
               file=sys.stderr)
 
     html_path = output_path.with_suffix('.html')
-    write_html(layers_data, behaviors, macros, html_path, grid, display_cols)
+    write_html(layers_data, behaviors, macros, html_path, grid, display_cols, geom)
     print(f'saved: {html_path}')
     return 0
 
