@@ -4,7 +4,11 @@ Generate human-readable key-assignment docs (Excel **.xlsx** + a self-contained
 **.html**) from a ZMK `.keymap` file. The tool parses standard ZMK behaviours —
 `&kp`, `&mt` (mod-tap), `&lt` (layer-tap), `&mo`/`&to` (layers), mod-morph,
 tap-dance and macros — resolves them recursively, and lays every layer out to
-match the board's real physical arrangement (including the split gap).
+match the board's real physical arrangement (including the split gap). The
+`.html` additionally renders each layer as a **visual layout figure** — keys
+positioned by their real coordinates (so column stagger, the split gap and key
+rotation all show), with the tap action on the cap, the hold action below it,
+and every operation in a hover tooltip.
 
 The script itself contains **no keyboard-specific data**. Everything particular
 to a board — each key's physical position *and its display label* — lives in a
@@ -50,8 +54,8 @@ first layout if there is no `default_layout`):
   "layouts": {
     "default_layout": {
       "layout": [
-        { "x": 0, "y": 0, "label": "Q" },
-        { "x": 1, "y": 0, "label": "W" }
+        { "x": 0, "y": 0, "w": 1, "h": 1, "label": "Q" },
+        { "x": 1, "y": 0, "w": 1, "h": 1, "label": "W" }
       ]
     }
   }
@@ -64,16 +68,26 @@ Per entry:
 |---------|----------|-------------------------------------------------------------------|
 | `x`     | yes      | column position (any numeric scale — logical slots or millimetres) |
 | `y`     | yes      | row position (smaller = higher)                                    |
+| `w`     | no       | key width in the same units (visual figure only; default = unit)   |
+| `h`     | no       | key height in the same units (visual figure only; default = unit)  |
+| `r`     | no       | key rotation in degrees (visual figure only)                       |
+| `rx`/`ry` | no     | rotation origin (visual figure only; default = the key's `x`/`y`)  |
 | `label` | no       | the key's DEFAULT-layer identity shown in the docs (e.g. `Q`)      |
+
+These map 1:1 onto ZMK's `key_physical_attrs <w h x y r rx ry>`, so a layout JSON
+can mirror a board's `zmk,physical-layout` directly.
 
 Rules:
 
 - **Order matters.** `layout[i]` describes keymap binding `i`; the array order
   must match the binding order in every layer.
 - **Rows** are the distinct `y` values (top to bottom); **columns** are the
-  distinct `x` values (left to right).
-- **The split gap is auto-detected** at the widest horizontal `x` gap and shown
-  as a blank separator column. Extra ZMK fields (`row`, `col`, `r`, …) are
+  distinct `x` values (left to right) — this drives the tables.
+- **The visual figure** places every key by its `x`/`y`/`w`/`h` (and optional
+  rotation), so it reflects the real board: column stagger, the split gap and
+  rotated thumb clusters all appear when the coordinates describe them.
+- **The split gap is auto-detected** (in the tables) at the widest horizontal
+  `x` gap and shown as a blank separator column. The `row`/`col` ZMK fields are
   ignored.
 - If the layout is missing or its key count doesn't match the bindings, the tool
   falls back to a single keymap-order row and labels default to `pos N`.
