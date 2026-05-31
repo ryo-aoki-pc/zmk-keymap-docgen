@@ -540,26 +540,42 @@ def load_physical_layout(path: Path):
     and may carry an optional `label` (that key's DEFAULT-layer identity, e.g.
     "Q"), which is how the tool stays free of keyboard-specific data. Entries
     may also carry `w`/`h` (key size) and `r`/`rx`/`ry` (rotation in degrees and
-    its origin) — all optional, used only by the visual layout figure.
+    its origin) — all optional, used only by the visual layout figure. An entry
+    may additionally carry `fx`/`fy` (figure-only coordinates): when present the
+    visual figure places that key at `fx`/`fy` while the tables keep using
+    `x`/`y`, so a clean integer grid can drive the tables while the figure shows
+    the real column stagger. An optional top-level `unit` sets the figure's
+    coordinate amount per 1u, so fractional stagger offsets don't blow up scale.
 
-    Returns a (coords, labels, geom) triple:
-      - coords: list of (x, y) floats, or None when the file is missing or
-        cannot be parsed (caller falls back to keymap-order rendering).
+    Returns a (coords, labels, geom, unit) tuple:
+      - coords: list of (x, y) floats for the TABLES, or None when the file is
+        missing or cannot be parsed (caller falls back to keymap-order rendering).
       - labels: {binding_index: label} for every entry that provides a label.
-      - geom: list of per-key dicts {'x','y','w','h','r','rx','ry'} (w/h/r/rx/ry
-        are None when absent) in binding order, or None alongside coords=None.
+      - geom: list of per-key dicts {'x','y','w','h','r','rx','ry'} for the FIGURE
+        ('x'/'y' come from `fx`/`fy` when given, else `x`/`y`; w/h/r/rx/ry are
+        None when absent) in binding order, or None alongside coords=None.
+      - unit: the optional top-level `unit` (positive float) or None when absent.
     """
     try:
         data = json.loads(Path(path).read_text(encoding='utf-8'))
     except (OSError, ValueError):
-        return None, {}, None
+        return None, {}, None, None
     layouts = data.get('layouts') if isinstance(data, dict) else None
     if not layouts:
-        return None, {}, None
+        return None, {}, None, None
     layout = layouts.get('default_layout') or next(iter(layouts.values()))
     entries = layout.get('layout') if isinstance(layout, dict) else None
     if not entries:
-        return None, {}, None
+        return None, {}, None, None
+    # Optional figure scale: coordinate amount that equals one key unit (1u).
+    # Lets fractional column-stagger offsets render without exploding the scale.
+    unit = None
+    try:
+        u = float(data['unit'])
+        if u > 0:
+            unit = u
+    except (KeyError, TypeError, ValueError):
+        pass
     coords: list[tuple[float, float]] = []
     labels: dict[int, str] = {}
     geom: list[dict] = []
@@ -575,15 +591,18 @@ def load_physical_layout(path: Path):
         try:
             x, y = float(e['x']), float(e['y'])
         except (KeyError, TypeError, ValueError):
-            return None, {}, None
+            return None, {}, None, None
         coords.append((x, y))
-        geom.append({'x': x, 'y': y,
+        # Figure uses fx/fy when given (real staggered position); tables use x/y.
+        fx, fy = opt_float(e, 'fx'), opt_float(e, 'fy')
+        geom.append({'x': fx if fx is not None else x,
+                     'y': fy if fy is not None else y,
                      'w': opt_float(e, 'w'), 'h': opt_float(e, 'h'),
                      'r': opt_float(e, 'r'),
                      'rx': opt_float(e, 'rx'), 'ry': opt_float(e, 'ry')})
         if isinstance(e, dict) and e.get('label') is not None:
             labels[i] = str(e['label'])
-    return (coords or None), labels, (geom or None)
+    return (coords or None), labels, (geom or None), unit
 
 
 def build_grid(coords: list[tuple[float, float]]):
@@ -992,8 +1011,9 @@ HTML_STYLE = """\
     position: absolute;
     box-sizing: border-box;
     border: 1px solid #b9c0c8;
-    border-radius: 6px;
-    background: #fbfcfd;
+    border-radius: 7px;
+    background: linear-gradient(180deg, #ffffff 0%, #eef1f4 100%);
+    box-shadow: inset 0 1px 0 #ffffff, inset 0 -2px 1px rgba(0,0,0,.05), 0 1px 2px rgba(0,0,0,.12);
     display: flex;
     flex-direction: column;
     align-items: center;
@@ -1008,7 +1028,7 @@ HTML_STYLE = """\
   .key .kl { font-size: 8px; color: #8a939b; align-self: flex-start; max-width: 100%; overflow: hidden; }
   .key .kt { font-size: 12px; font-weight: 600; color: #1f2328; max-width: 100%; overflow: hidden; }
   .key .kh { font-size: 9px; color: #0969da; max-width: 100%; overflow: hidden; }
-  .key.none { background: #f0f1f2; border-style: dashed; opacity: .45; }
+  .key.none { background: #f0f1f2; border-style: dashed; opacity: .45; box-shadow: none; }
   .key.trans { background: #f7f8fa; }
   .key.trans .kt { color: #8a939b; font-weight: 400; }
 """
@@ -1151,12 +1171,15 @@ def _visual_key_html(idx: int, binding: str, g: dict, scale: float, unit: float,
 
 
 def _html_visual_layer(bindings: list[str], behaviors: dict, macros: dict,
-                       geom: list[dict]) -> list[str]:
+                       geom: list[dict], unit: float | None = None) -> list[str]:
     """Render a layer as a visual keyboard figure (keys placed by real x/y/w/h).
-    Returns [] when no usable geometry is available for these bindings."""
+    `unit` (the layout's coordinate amount per 1u) is honored when given so
+    fractional column-stagger offsets render at a sensible scale; otherwise it
+    is auto-detected. Returns [] when no usable geometry is available."""
     if not geom or len(geom) != len(bindings):
         return []
-    unit = _layout_unit(geom)
+    if unit is None:
+        unit = _layout_unit(geom)
     scale = KEY_PX / unit
     width = max(((g['w'] if g['w'] is not None else unit) + g['x']) for g in geom) * scale
     height = max(((g['h'] if g['h'] is not None else unit) + g['y']) for g in geom) * scale
@@ -1169,7 +1192,7 @@ def _html_visual_layer(bindings: list[str], behaviors: dict, macros: dict,
 
 def write_html(layers_data: list[tuple[str, list[str]]],
                behaviors: dict, macros: dict, output_path: Path,
-               grid, display_cols, geom=None) -> None:
+               grid, display_cols, geom=None, unit=None) -> None:
     """Generate one standalone HTML file.
     Single layer  => H1 layer title, then H2 動作 / H2 経路.
     Multi layers  => H1 top title, H2 動作 (each layer at H3), then H2 経路."""
@@ -1186,7 +1209,7 @@ def write_html(layers_data: list[tuple[str, list[str]]],
         body.append('<li>' + _html_inline('各 row セクション行に「キーラベル」と「バインディング (`&...`)」の 2 段表示でキー位置を示す。') + '</li>')
         body.append('<li>' + _html_inline('各表の左端 1 列が「操作」（タップ / ホールド / ダブルタップ / Shift+ / Ctrl+）または「Row N」見出し。') + '</li>')
         body.append('</ul>')
-        visual = _html_visual_layer(bindings, behaviors, macros, geom)
+        visual = _html_visual_layer(bindings, behaviors, macros, geom, unit)
         if visual:
             body.append(f'<h2>{_html_inline("レイアウト図")}</h2>')
             body.append('<p>' + _html_inline(
@@ -1220,7 +1243,7 @@ def write_html(layers_data: list[tuple[str, list[str]]],
                 '全操作（ダブルタップ / Shift+ / Ctrl+ など）はマウスオーバーのツールチップで確認できる。'
             ) + '</p>')
             for layer_name, bindings in layers_data:
-                visual = _html_visual_layer(bindings, behaviors, macros, geom)
+                visual = _html_visual_layer(bindings, behaviors, macros, geom, unit)
                 if not visual:
                     continue
                 body.append(f'<h3>{_html_text(f"{layer_name} レイヤー")}</h3>')
@@ -1320,7 +1343,7 @@ def main() -> int:
     # Physical layout drives the row/column arrangement to match the real board.
     total = len(layers_data[0][1]) if layers_data else 0
     layout_path = Path(args.layout) if args.layout else keymap_path.with_suffix('.json')
-    coords, labels, geom = load_physical_layout(layout_path)
+    coords, labels, geom, unit = load_physical_layout(layout_path)
     if coords and len(coords) == total:
         KEY_LABELS.clear()
         KEY_LABELS.update(labels)
@@ -1351,7 +1374,7 @@ def main() -> int:
               file=sys.stderr)
 
     html_path = output_path.with_suffix('.html')
-    write_html(layers_data, behaviors, macros, html_path, grid, display_cols, geom)
+    write_html(layers_data, behaviors, macros, html_path, grid, display_cols, geom, unit)
     print(f'saved: {html_path}')
     return 0
 

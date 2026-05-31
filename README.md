@@ -72,7 +72,10 @@ Per entry:
 | `h`     | no       | key height in the same units (visual figure only; default = unit)  |
 | `r`     | no       | key rotation in degrees (visual figure only)                       |
 | `rx`/`ry` | no     | rotation origin (visual figure only; default = the key's `x`/`y`)  |
+| `fx`/`fy` | no     | figure-only position; the visual figure uses these instead of `x`/`y` (default = `x`/`y`). Lets a clean integer `x`/`y` grid drive the tables while the figure shows the real column stagger. |
 | `label` | no       | the key's DEFAULT-layer identity shown in the docs (e.g. `Q`)      |
+
+A top-level optional **`unit`** (positive number) sets how many coordinate units equal one key (1u) in the figure. Give it when the coordinates use a 1-per-column scale but the stagger offsets are fractional (e.g. `"unit": 1`), so the figure scale comes from the unit instead of being auto-detected from the smallest coordinate gap (which fractional stagger would otherwise shrink, blowing up the figure).
 
 These map 1:1 onto ZMK's `key_physical_attrs <w h x y r rx ry>`, so a layout JSON
 can mirror a board's `zmk,physical-layout` directly.
