@@ -1149,9 +1149,6 @@ HTML_STYLE = """\
   .key.none { background: #f0f1f2; border-style: dashed; opacity: .45; box-shadow: none; }
   .key.trans { background: #f7f8fa; }
   .key.trans .kt { color: #8a939b; font-weight: 400; }
-  .key.mouse { background: #eafbea; border-color: #8fd28f; }
-  .key.bt { background: #eaf1fb; border-color: #8fb4e0; }
-  .key.out { background: #f3eafb; border-color: #b48fe0; }
 """
 
 
@@ -1278,12 +1275,6 @@ def _visual_key_html(idx: int, binding: str, g: dict, scale: float, unit: float,
         cls += ' none'
     elif b == '&trans':
         cls += ' trans'
-    elif b.startswith(('&mkp', '&mmv', '&msc')):
-        cls += ' mouse'
-    elif b.startswith('&bt'):
-        cls += ' bt'
-    elif b.startswith('&out'):
-        cls += ' out'
 
     # Tooltip: every operation that resolves to something, plus the raw binding.
     tip_lines = [f'{op}: {actions[op]}' for op in OPS if actions[op]]
