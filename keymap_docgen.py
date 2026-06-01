@@ -1281,9 +1281,11 @@ def _visual_key_html(idx: int, binding: str, g: dict, scale: float, unit: float,
     tip_lines.append(format_binding_for_display(binding))
     tip = _html_text('\n'.join(tip_lines)).replace('"', '&quot;').replace('\n', '&#10;')
 
-    label = get_label(idx)
+    # Key-identity label: only when the physical-layout JSON defines a real one.
+    # The "pos N" index fallback is meaningless on the figure, so it is omitted.
+    label = KEY_LABELS.get(idx)
     parts = [f'<div class="{cls}" style="{style}" title="{tip}">']
-    if b != '&none':
+    if b != '&none' and label:
         parts.append(f'<span class="kl">{_html_text(label)}</span>')
     parts.append(f'<span class="kt">{_html_text(tap)}</span>')
     # Show the hold action only when it is a distinct assignment (not just the
