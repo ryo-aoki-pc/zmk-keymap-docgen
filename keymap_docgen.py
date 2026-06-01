@@ -299,6 +299,53 @@ MOD_PREFIX = {
     'LG': '⌘', 'RG': '⌘',
 }
 
+# マウス／Bluetooth／出力の表示ラベル
+MOUSE_BUTTON_LABELS = {
+    'LCLK': '🖱左', 'MB1': '🖱左',
+    'RCLK': '🖱右', 'MB2': '🖱右',
+    'MCLK': '🖱中', 'MB3': '🖱中',
+    'MB4': '🖱戻', 'MB5': '🖱進',
+}
+
+MOUSE_MOVE_LABELS = {
+    'MOVE_UP': '🖱↑', 'MOVE_DOWN': '🖱↓',
+    'MOVE_LEFT': '🖱←', 'MOVE_RIGHT': '🖱→',
+    'MOVE_X': '🖱X', 'MOVE_Y': '🖱Y',
+}
+
+MOUSE_SCROLL_LABELS = {
+    'SCRL_UP': '🖱⇑', 'SCRL_DOWN': '🖱⇓',
+    'SCRL_LEFT': '🖱⇐', 'SCRL_RIGHT': '🖱⇒',
+}
+
+BT_LABELS = {
+    'BT_CLR': 'BT解除', 'BT_CLR_ALL': 'BT全解除',
+    'BT_NXT': 'BT次', 'BT_PRV': 'BT前',
+}
+
+OUT_LABELS = {
+    'OUT_TOG': '出力切替', 'OUT_USB': 'USB出力', 'OUT_BLE': 'BLE出力',
+}
+
+# システム操作 (引数なしの組み込みビヘイビア)
+SYSTEM_LABELS = {
+    '&sys_reset': 'リセット',
+    '&bootloader': 'ブートローダ',
+    '&soft_off': '電源オフ',
+    '&studio_unlock': 'Studio解除',
+}
+
+
+def format_mouse(head: str, arg: str) -> str:
+    """&mkp / &mmv / &msc のパラメータを読みやすいラベルに変換する。"""
+    base = arg.strip().split('(')[0].strip()
+    table = {
+        '&mkp': MOUSE_BUTTON_LABELS,
+        '&mmv': MOUSE_MOVE_LABELS,
+        '&msc': MOUSE_SCROLL_LABELS,
+    }.get(head, {})
+    return table.get(base, f'🖱{base}')
+
 
 def format_keycode(kc: str) -> str:
     kc = kc.strip()
@@ -390,6 +437,29 @@ def resolve(binding: str, behaviors: dict, macros: dict, op: str, depth: int = 0
     if m:
         layer = m.group(1)
         return (f'⇒{layer_display(layer)}', f'&to {layer_display(layer)}')
+
+    parts = b.split()
+    head = parts[0] if parts else ''
+
+    # &mkp / &mmv / &msc (マウスボタン・移動・スクロール)
+    if head in ('&mkp', '&mmv', '&msc') and len(parts) >= 2:
+        arg = ' '.join(parts[1:])
+        return (format_mouse(head, arg), f'{head} {arg}')
+
+    # &bt (Bluetooth)
+    if head == '&bt' and len(parts) >= 2:
+        action = parts[1]
+        if action == 'BT_SEL' and len(parts) >= 3:
+            return (f'BT{parts[2]}', f'&bt BT_SEL {parts[2]}')
+        return (BT_LABELS.get(action, action), b)
+
+    # &out (出力先切替)
+    if head == '&out' and len(parts) >= 2:
+        return (OUT_LABELS.get(parts[1], parts[1]), b)
+
+    # &sys_reset / &bootloader などのシステム操作
+    if head in SYSTEM_LABELS:
+        return (SYSTEM_LABELS[head], b)
 
     # Custom behavior / macro reference like &mm_vim_g, &td_vim_d, &macro_vim_dd
     if b.startswith('&'):
@@ -1223,9 +1293,11 @@ def _visual_key_html(idx: int, binding: str, g: dict, scale: float, unit: float,
     tip_lines.append(format_binding_for_display(binding))
     tip = _html_text('\n'.join(tip_lines)).replace('"', '&quot;').replace('\n', '&#10;')
 
-    label = get_label(idx)
+    # Key-identity label: only when the physical-layout JSON defines a real one.
+    # The "pos N" index fallback is meaningless on the figure, so it is omitted.
+    label = KEY_LABELS.get(idx)
     parts = [f'<div class="{cls}" style="{style}" title="{tip}">']
-    if b != '&none':
+    if b != '&none' and label:
         parts.append(f'<span class="kl">{_html_text(label)}</span>')
     parts.append(f'<span class="kt">{_html_text(tap)}</span>')
     # Show the hold action only when it is a distinct assignment (not just the
