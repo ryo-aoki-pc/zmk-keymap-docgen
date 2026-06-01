@@ -327,6 +327,14 @@ OUT_LABELS = {
     'OUT_TOG': '出力切替', 'OUT_USB': 'USB出力', 'OUT_BLE': 'BLE出力',
 }
 
+# システム操作 (引数なしの組み込みビヘイビア)
+SYSTEM_LABELS = {
+    '&sys_reset': 'リセット',
+    '&bootloader': 'ブートローダ',
+    '&soft_off': '電源オフ',
+    '&studio_unlock': 'Studio解除',
+}
+
 
 def format_mouse(head: str, arg: str) -> str:
     """&mkp / &mmv / &msc のパラメータを読みやすいラベルに変換する。"""
@@ -448,6 +456,10 @@ def resolve(binding: str, behaviors: dict, macros: dict, op: str, depth: int = 0
     # &out (出力先切替)
     if head == '&out' and len(parts) >= 2:
         return (OUT_LABELS.get(parts[1], parts[1]), b)
+
+    # &sys_reset / &bootloader などのシステム操作
+    if head in SYSTEM_LABELS:
+        return (SYSTEM_LABELS[head], b)
 
     # Custom behavior / macro reference like &mm_vim_g, &td_vim_d, &macro_vim_dd
     if b.startswith('&'):
