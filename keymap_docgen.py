@@ -972,6 +972,14 @@ def _normalize_cell(value: str) -> str:
     return value
 
 
+def _op_assigned(tap_val: str, op_val: str, op: str) -> bool:
+    """True when op_val is a distinct assignment for the given non-tap op.
+
+    '' (未対応 / &none / 何もしない) and '▽' (&trans) never count as distinct,
+    nor do values that are just the auto-derived form of the tap value."""
+    return op_val not in ('', '▽') and op_val not in _auto_forms(tap_val, op)
+
+
 def _split_cell_lines(value: str) -> list[str]:
     """Split a cell value into display lines at each ' ▸ ' separator, keeping the
     '▸' marker at the start of the continuation line. Values without a separator
@@ -1161,6 +1169,9 @@ HTML_STYLE = """\
   .key.none { background: #f0f1f2; border-style: dashed; opacity: .45; box-shadow: none; }
   .key.trans { background: #f7f8fa; }
   .key.trans .kt { color: #8a939b; font-weight: 400; }
+  /* Extra-op figures (Tap Dance / Mod Morph): keys without a distinct assignment. */
+  .key.dim { background: #fafbfc; border-style: dashed; border-color: #d8dde2; opacity: .4; box-shadow: none; }
+  .key.dim .kl { color: #b1b8be; }
 """
 
 
@@ -1264,8 +1275,12 @@ def _fmt_px(v: float) -> str:
 
 
 def _visual_key_html(idx: int, binding: str, g: dict, scale: float, unit: float,
-                     behaviors: dict, macros: dict) -> str:
-    """Render one absolutely-positioned key box for the visual layout figure."""
+                     behaviors: dict, macros: dict, op: str = 'タップ') -> str:
+    """Render one absolutely-positioned key box for the visual layout figure.
+
+    `op` selects which operation the key face shows. The default 'タップ' face
+    shows tap + distinct hold; other ops (ダブルタップ / Shift+ / Ctrl+) show
+    only that op's distinct assignment and dim every unassigned key."""
     w = (g['w'] if g['w'] is not None else unit) * scale - KEY_GAP_PX
     h = (g['h'] if g['h'] is not None else unit) * scale - KEY_GAP_PX
     left = g['x'] * scale
@@ -1278,24 +1293,39 @@ def _visual_key_html(idx: int, binding: str, g: dict, scale: float, unit: float,
         style += (f';transform:rotate({_fmt_px(g["r"])}deg)'
                   f';transform-origin:{_fmt_px(ox)}px {_fmt_px(oy)}px')
 
-    actions = {op: _normalize_cell(resolve(binding, behaviors, macros, op)[0]) for op in OPS}
+    actions = {o: _normalize_cell(resolve(binding, behaviors, macros, o)[0]) for o in OPS}
     tap, hold = actions['タップ'], actions['ホールド']
 
     b = binding.strip()
-    cls = 'key'
-    if b == '&none':
-        cls += ' none'
-    elif b == '&trans':
-        cls += ' trans'
 
     # Tooltip: every operation that resolves to something, plus the raw binding.
-    tip_lines = [f'{op}: {actions[op]}' for op in OPS if actions[op]]
+    tip_lines = [f'{o}: {actions[o]}' for o in OPS if actions[o]]
     tip_lines.append(format_binding_for_display(binding))
     tip = _html_text('\n'.join(tip_lines)).replace('"', '&quot;').replace('\n', '&#10;')
 
     # Key-identity label: only when the physical-layout JSON defines a real one.
     # The "pos N" index fallback is meaningless on the figure, so it is omitted.
     label = KEY_LABELS.get(idx)
+
+    if op != 'タップ':
+        # Extra-op figure (Tap Dance / Mod Morph): show only keys with a distinct
+        # assignment for this op; every other key is a dimmed empty outline.
+        assigned = _op_assigned(tap, actions[op], op)
+        cls = 'key' if assigned else 'key dim'
+        parts = [f'<div class="{cls}" style="{style}" title="{tip}">']
+        if b != '&none' and label:
+            parts.append(f'<span class="kl">{_html_text(label)}</span>')
+        if assigned:
+            parts.append(f'<span class="kt">{_html_text(actions[op])}</span>')
+        parts.append('</div>')
+        return ''.join(parts)
+
+    cls = 'key'
+    if b == '&none':
+        cls += ' none'
+    elif b == '&trans':
+        cls += ' trans'
+
     parts = [f'<div class="{cls}" style="{style}" title="{tip}">']
     if b != '&none' and label:
         parts.append(f'<span class="kl">{_html_text(label)}</span>')
@@ -1309,11 +1339,13 @@ def _visual_key_html(idx: int, binding: str, g: dict, scale: float, unit: float,
 
 
 def _html_visual_layer(bindings: list[str], behaviors: dict, macros: dict,
-                       geom: list[dict], unit: float | None = None) -> list[str]:
+                       geom: list[dict], unit: float | None = None,
+                       op: str = 'タップ') -> list[str]:
     """Render a layer as a visual keyboard figure (keys placed by real x/y/w/h).
     `unit` (the layout's coordinate amount per 1u) is honored when given so
     fractional column-stagger offsets render at a sensible scale; otherwise it
-    is auto-detected. Returns [] when no usable geometry is available."""
+    is auto-detected. `op` selects the operation each key face shows (see
+    _visual_key_html). Returns [] when no usable geometry is available."""
     if not geom or len(geom) != len(bindings):
         return []
     if unit is None:
@@ -1323,8 +1355,43 @@ def _html_visual_layer(bindings: list[str], behaviors: dict, macros: dict,
     height = max(((g['h'] if g['h'] is not None else unit) + g['y']) for g in geom) * scale
     out = [f'<div class="kb" style="width:{_fmt_px(width)}px;height:{_fmt_px(height)}px">']
     for idx, (binding, g) in enumerate(zip(bindings, geom)):
-        out.append(_visual_key_html(idx, binding, g, scale, unit, behaviors, macros))
+        out.append(_visual_key_html(idx, binding, g, scale, unit, behaviors, macros, op))
     out.append('</div>')
+    return out
+
+
+# Extra per-layer figures: ops beyond tap/hold that get their own physical-layout
+# figure when at least one key in the layer has a distinct assignment for them.
+EXTRA_OP_HEADING = {
+    'ダブルタップ': 'Tap Dance: ダブルタップ',
+    'Shift+': 'Mod Morph: Shift+',
+    'Ctrl+': 'Mod Morph: Ctrl+',
+}
+
+
+def _layer_extra_ops(bindings: list[str], behaviors: dict, macros: dict) -> list[str]:
+    """Ops (ダブルタップ / Shift+ / Ctrl+) for which this layer has at least one
+    key with a distinct assignment — each one gets an extra figure."""
+    taps = [_normalize_cell(resolve(b, behaviors, macros, 'タップ')[0]) for b in bindings]
+    out = []
+    for op in EXTRA_OP_HEADING:
+        vals = (_normalize_cell(resolve(b, behaviors, macros, op)[0]) for b in bindings)
+        if any(_op_assigned(t, v, op) for t, v in zip(taps, vals)):
+            out.append(op)
+    return out
+
+
+def _html_extra_visual_layers(layer_name: str, bindings: list[str], behaviors: dict,
+                              macros: dict, geom, unit) -> list[str]:
+    """Extra figures (heading + figure) for every op the layer has distinct
+    Tap Dance / Mod Morph assignments for. Returns [] when there are none."""
+    out: list[str] = []
+    for op in _layer_extra_ops(bindings, behaviors, macros):
+        visual = _html_visual_layer(bindings, behaviors, macros, geom, unit, op=op)
+        if not visual:
+            continue
+        out.append(f'<h3>{_html_text(f"{layer_name} レイヤー（{EXTRA_OP_HEADING[op]}）")}</h3>')
+        out += visual
     return out
 
 
@@ -1353,8 +1420,11 @@ def write_html(layers_data: list[tuple[str, list[str]]],
             body.append('<p>' + _html_inline(
                 'キーを実機の物理配列どおりに配置。各キーは「ラベル / タップ動作 / (ホールド動作)」を表示し、'
                 '全操作（ダブルタップ / Shift+ / Ctrl+ など）はマウスオーバーのツールチップで確認できる。'
+                'Tap Dance / Mod Morph の割り当てがある場合は、その操作専用の図を追加表示する'
+                '（割り当てのないキーは薄い枠のみ）。'
             ) + '</p>')
             body += visual
+            body += _html_extra_visual_layers(layer_name, bindings, behaviors, macros, geom, unit)
         for mode_label, mode in [('動作', 'action'), ('経路', 'path')]:
             body.append(f'<h2>{_html_inline(mode_label)}</h2>')
             header, rows = _build_layer_mode_table(bindings, behaviors, macros, mode,
@@ -1379,6 +1449,8 @@ def write_html(layers_data: list[tuple[str, list[str]]],
             body.append('<p>' + _html_inline(
                 '各レイヤーを実機の物理配列どおりに配置。各キーは「ラベル / タップ動作 / (ホールド動作)」を表示し、'
                 '全操作（ダブルタップ / Shift+ / Ctrl+ など）はマウスオーバーのツールチップで確認できる。'
+                'Tap Dance / Mod Morph の割り当てがあるレイヤーには、その操作専用の図を追加表示する'
+                '（割り当てのないキーは薄い枠のみ）。'
             ) + '</p>')
             for layer_name, bindings in layers_data:
                 visual = _html_visual_layer(bindings, behaviors, macros, geom, unit)
@@ -1386,6 +1458,7 @@ def write_html(layers_data: list[tuple[str, list[str]]],
                     continue
                 body.append(f'<h3>{_html_text(f"{layer_name} レイヤー")}</h3>')
                 body += visual
+                body += _html_extra_visual_layers(layer_name, bindings, behaviors, macros, geom, unit)
 
         # Positions that are `&none` in the DEFAULT layer are inactive and
         # hidden in every layer's table.
