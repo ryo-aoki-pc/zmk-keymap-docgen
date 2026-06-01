@@ -44,8 +44,10 @@ Examples:
 import argparse
 import json
 import re
+import statistics
 import sys
 import unicodedata
+from collections import Counter
 from pathlib import Path
 
 try:
@@ -526,8 +528,9 @@ GAP = 'GAP'  # sentinel marking a blank split-gap display column
 
 # Visual (physical) layout figure: rendered pixels per physical key unit, and the
 # inset that keeps adjacent key boxes from touching. A "unit" is auto-detected as
-# the smallest gap between distinct coordinates (so both millimetre-scale DTS
-# coordinates and 1-per-column logical layouts render at a sensible size).
+# the most common gap between distinct coordinates (so both millimetre-scale DTS
+# coordinates and 1-per-column logical layouts — including column-staggered ones
+# whose tiny stagger offsets must not become the unit — render at a sensible size).
 KEY_PX = 52
 KEY_GAP_PX = 4
 
@@ -547,7 +550,7 @@ def load_physical_layout(path: Path):
     the real column stagger. An optional top-level `unit` sets the figure's
     coordinate amount per 1u, so fractional stagger offsets don't blow up scale.
 
-    Returns a (coords, labels, geom, unit) tuple:
+    Returns a (coords, labels, geom, unit, rowcol) tuple:
       - coords: list of (x, y) floats for the TABLES, or None when the file is
         missing or cannot be parsed (caller falls back to keymap-order rendering).
       - labels: {binding_index: label} for every entry that provides a label.
@@ -555,18 +558,21 @@ def load_physical_layout(path: Path):
         ('x'/'y' come from `fx`/`fy` when given, else `x`/`y`; w/h/r/rx/ry are
         None when absent) in binding order, or None alongside coords=None.
       - unit: the optional top-level `unit` (positive float) or None when absent.
+      - rowcol: list of (row, col) ints in binding order when EVERY entry carries
+        integer `row` and `col` (a clean logical grid the tables prefer over the
+        raw x/y, which column-stagger keeps from grouping into rows); else None.
     """
     try:
         data = json.loads(Path(path).read_text(encoding='utf-8'))
     except (OSError, ValueError):
-        return None, {}, None, None
+        return None, {}, None, None, None
     layouts = data.get('layouts') if isinstance(data, dict) else None
     if not layouts:
-        return None, {}, None, None
+        return None, {}, None, None, None
     layout = layouts.get('default_layout') or next(iter(layouts.values()))
     entries = layout.get('layout') if isinstance(layout, dict) else None
     if not entries:
-        return None, {}, None, None
+        return None, {}, None, None, None
     # Optional figure scale: coordinate amount that equals one key unit (1u).
     # Lets fractional column-stagger offsets render without exploding the scale.
     unit = None
@@ -579,6 +585,8 @@ def load_physical_layout(path: Path):
     coords: list[tuple[float, float]] = []
     labels: dict[int, str] = {}
     geom: list[dict] = []
+    rowcol: list[tuple[int, int]] = []
+    have_rowcol = True
 
     def opt_float(e, key):
         v = e.get(key) if isinstance(e, dict) else None
@@ -587,11 +595,16 @@ def load_physical_layout(path: Path):
         except (TypeError, ValueError):
             return None
 
+    def opt_int(e, key):
+        v = e.get(key) if isinstance(e, dict) else None
+        # bool is an int subclass; exclude it so true/false isn't read as 1/0.
+        return v if isinstance(v, int) and not isinstance(v, bool) else None
+
     for i, e in enumerate(entries):
         try:
             x, y = float(e['x']), float(e['y'])
         except (KeyError, TypeError, ValueError):
-            return None, {}, None, None
+            return None, {}, None, None, None
         coords.append((x, y))
         # Figure uses fx/fy when given (real staggered position); tables use x/y.
         fx, fy = opt_float(e, 'fx'), opt_float(e, 'fy')
@@ -600,22 +613,33 @@ def load_physical_layout(path: Path):
                      'w': opt_float(e, 'w'), 'h': opt_float(e, 'h'),
                      'r': opt_float(e, 'r'),
                      'rx': opt_float(e, 'rx'), 'ry': opt_float(e, 'ry')})
+        r_, c_ = opt_int(e, 'row'), opt_int(e, 'col')
+        if r_ is None or c_ is None:
+            have_rowcol = False
+        else:
+            rowcol.append((r_, c_))
         if isinstance(e, dict) and e.get('label') is not None:
             labels[i] = str(e['label'])
-    return (coords or None), labels, (geom or None), unit
+    rc = rowcol if have_rowcol and len(rowcol) == len(coords) else None
+    return (coords or None), labels, (geom or None), unit, rc
 
 
-def build_grid(coords: list[tuple[float, float]]):
-    """Build physical rows + display columns from per-index (x, y) coordinates.
+def build_grid(coords: list[tuple[float, float]], rowcol=None):
+    """Build physical rows + display columns from per-index coordinates.
 
-    Rows are grouped by distinct y (top to bottom); columns are the distinct x
-    values (left to right) with a single blank GAP column inserted at the widest
-    horizontal gap (the split between the two halves). Returns
-    (rows, display_cols) where:
-      - display_cols: left-to-right list of x-values (float) and GAP sentinels.
+    When `rowcol` (explicit integer (row, col) per key) is given it drives the
+    grid directly — preferred for column-staggered boards whose raw x/y don't
+    group into clean rows. Otherwise rows are grouped by distinct y (top to
+    bottom) and columns are the distinct x values (left to right). Either way a
+    single blank GAP column is inserted at the widest horizontal gap (the split
+    between the two halves). Returns (rows, display_cols) where:
+      - display_cols: left-to-right list of column keys (x-values or col ids)
+        and GAP sentinels.
       - rows: list of {'y': y, 'cells': [idx | None per display column]} where a
         None cell is an empty position, the split gap, or a missing key.
     """
+    if rowcol is not None:
+        return _build_grid_rowcol(rowcol, coords)
     if not coords:
         return None, None
     xs = sorted({x for x, _ in coords})
@@ -639,6 +663,42 @@ def build_grid(coords: list[tuple[float, float]]):
     for y in ys:
         cells = [None if col == GAP else pos.get((col, y)) for col in display_cols]
         rows.append({'y': y, 'cells': cells})
+    return rows, display_cols
+
+
+def _build_grid_rowcol(rowcol: list[tuple[int, int]],
+                       coords: list[tuple[float, float]] | None):
+    """Grid from explicit (row, col) indices: rows top-to-bottom by row id,
+    columns left-to-right by col id. The split GAP is placed at the widest
+    horizontal gap between adjacent columns, located from each column's
+    representative (median) x so it follows the real halves regardless of how
+    the columns happen to be numbered. Falls back to the largest col-id gap when
+    no coordinates are available."""
+    row_ids = sorted({r for r, _ in rowcol})
+    cols = sorted({c for _, c in rowcol})
+
+    # Per-column ordering value: median x of its keys (so a stray off-grid key
+    # can't move the column), else the col id itself.
+    if coords:
+        col_x = {c: statistics.median([coords[i][0]
+                                       for i, (_, cc) in enumerate(rowcol) if cc == c])
+                 for c in cols}
+    else:
+        col_x = {c: float(c) for c in cols}
+    diffs = [col_x[cols[i + 1]] - col_x[cols[i]] for i in range(len(cols) - 1)]
+    gap_after = diffs.index(max(diffs)) if diffs and max(diffs) > min(diffs) else -1
+
+    display_cols: list = []
+    for i, c in enumerate(cols):
+        display_cols.append(c)
+        if i == gap_after:
+            display_cols.append(GAP)
+
+    pos = {(r, c): idx for idx, (r, c) in enumerate(rowcol)}
+    rows = []
+    for r in row_ids:
+        cells = [None if col == GAP else pos.get((r, col)) for col in display_cols]
+        rows.append({'y': r, 'cells': cells})
     return rows, display_cols
 
 
@@ -1112,14 +1172,20 @@ def _html_table_lines(header: list[str], rows: list[dict], css_class: str | None
 
 
 def _layout_unit(geom: list[dict]) -> float:
-    """Smallest positive gap between distinct x or y coordinates, used as the
-    physical key unit when a key carries no explicit w/h. Falls back to 1.0."""
-    def min_gap(vals: list[float]) -> float:
-        uniq = sorted(set(vals))
-        diffs = [b - a for a, b in zip(uniq, uniq[1:]) if b - a > 0]
-        return min(diffs) if diffs else float('inf')
-    unit = min(min_gap([g['x'] for g in geom]), min_gap([g['y'] for g in geom]))
-    return unit if unit != float('inf') else 1.0
+    """Representative key pitch (1u): scales the figure and sizes keys that carry
+    no explicit w/h. Taken as the most common gap between adjacent distinct x/y
+    coordinates, so column-stagger offsets — a minority of small, irregular gaps
+    — don't shrink the unit and blow the figure up. Ties prefer the smaller gap;
+    falls back to 1.0 when there is nothing to measure."""
+    gaps: list[float] = []
+    for axis in ('x', 'y'):
+        uniq = sorted({g[axis] for g in geom})
+        gaps += [round(b - a, 3) for a, b in zip(uniq, uniq[1:]) if b - a > 1e-9]
+    if not gaps:
+        return 1.0
+    counts = Counter(gaps)
+    top = max(counts.values())
+    return min(g for g, c in counts.items() if c == top)
 
 
 def _fmt_px(v: float) -> str:
@@ -1343,11 +1409,11 @@ def main() -> int:
     # Physical layout drives the row/column arrangement to match the real board.
     total = len(layers_data[0][1]) if layers_data else 0
     layout_path = Path(args.layout) if args.layout else keymap_path.with_suffix('.json')
-    coords, labels, geom, unit = load_physical_layout(layout_path)
+    coords, labels, geom, unit, rowcol = load_physical_layout(layout_path)
     if coords and len(coords) == total:
         KEY_LABELS.clear()
         KEY_LABELS.update(labels)
-        grid, display_cols = build_grid(coords)
+        grid, display_cols = build_grid(coords, rowcol)
         print(f'physical layout: {layout_path} ({len(coords)} keys)')
     else:
         grid, display_cols = legacy_grid(total)

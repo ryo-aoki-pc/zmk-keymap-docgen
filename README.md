@@ -73,6 +73,7 @@ Per entry:
 | `r`     | no       | key rotation in degrees (visual figure only)                       |
 | `rx`/`ry` | no     | rotation origin (visual figure only; default = the key's `x`/`y`)  |
 | `fx`/`fy` | no     | figure-only position; the visual figure uses these instead of `x`/`y` (default = `x`/`y`). Lets a clean integer `x`/`y` grid drive the tables while the figure shows the real column stagger. |
+| `row`/`col` | no   | logical grid indices; when **every** key has integer `row` and `col` they drive the table rows/columns (preferred over `x`/`y`, which column stagger keeps from grouping into clean rows). The figure still uses `x`/`y`/`fx`/`fy`. |
 | `label` | no       | the key's DEFAULT-layer identity shown in the docs (e.g. `Q`)      |
 
 A top-level optional **`unit`** (positive number) sets how many coordinate units equal one key (1u) in the figure. Give it when the coordinates use a 1-per-column scale but the stagger offsets are fractional (e.g. `"unit": 1`), so the figure scale comes from the unit instead of being auto-detected from the smallest coordinate gap (which fractional stagger would otherwise shrink, blowing up the figure).
@@ -84,14 +85,16 @@ Rules:
 
 - **Order matters.** `layout[i]` describes keymap binding `i`; the array order
   must match the binding order in every layer.
-- **Rows** are the distinct `y` values (top to bottom); **columns** are the
-  distinct `x` values (left to right) — this drives the tables.
+- **Rows/columns** come from the `row`/`col` fields when every key has them;
+  otherwise they are the distinct `y` (top to bottom) and `x` (left to right)
+  values — this drives the tables.
 - **The visual figure** places every key by its `x`/`y`/`w`/`h` (and optional
   rotation), so it reflects the real board: column stagger, the split gap and
   rotated thumb clusters all appear when the coordinates describe them.
 - **The split gap is auto-detected** (in the tables) at the widest horizontal
-  `x` gap and shown as a blank separator column. The `row`/`col` ZMK fields are
-  ignored.
+  gap between adjacent columns and shown as a blank separator column. With
+  `row`/`col` the gap is located from each column's representative `x`, so it
+  follows the real halves regardless of how the columns are numbered.
 - If the layout is missing or its key count doesn't match the bindings, the tool
   falls back to a single keymap-order row and labels default to `pos N`.
 
