@@ -1183,6 +1183,33 @@ HTML_STYLE = """\
   /* Extra-op figures (Tap Dance / Mod Morph): keys without a distinct assignment. */
   .key.dim { background: #fafbfc; border-style: dashed; border-color: #d8dde2; opacity: .4; box-shadow: none; }
   .key.dim .kl { color: #b1b8be; }
+  /* Layout-figure table: one row per layer; the layer's main figure and its
+     Tap Dance / Mod Morph figures all share the single right-hand cell. */
+  table.figures { width: auto; }
+  table.figures th.fig-layer {
+    white-space: nowrap;
+    vertical-align: middle;
+    font-family: -apple-system, "Segoe UI", "Noto Sans JP", Meiryo, sans-serif;
+    font-size: 13px;
+    background: #f6f8fa;
+    padding: 8px 12px;
+  }
+  table.figures td.fig-cell {
+    text-align: left;
+    white-space: normal;
+    padding: 10px 14px;
+    font-family: -apple-system, "Segoe UI", "Noto Sans JP", Meiryo, sans-serif;
+  }
+  /* Header cells of the figure table must not stick over the figures. */
+  table.figures thead th { position: static; }
+  table.figures .kb { margin: 6px 0; }
+  /* Caption above each Tap Dance / Mod Morph figure inside a layer's cell. */
+  .fig-caption {
+    font-weight: 600;
+    font-size: 13px;
+    color: #57606a;
+    margin: 14px 0 0;
+  }
 """
 
 
@@ -1457,17 +1484,47 @@ def _layer_extra_ops(bindings: list[str], behaviors: dict, macros: dict) -> list
     return out
 
 
-def _html_extra_visual_layers(layer_name: str, bindings: list[str], behaviors: dict,
+def _html_extra_visual_layers(bindings: list[str], behaviors: dict,
                               macros: dict, geom, unit) -> list[str]:
-    """Extra figures (heading + figure) for every op the layer has distinct
-    Tap Dance / Mod Morph assignments for. Returns [] when there are none."""
+    """Extra figures (caption + figure) for every op the layer has distinct
+    Tap Dance / Mod Morph assignments for. Rendered inside the layer's
+    figure-table cell, below the main figure. Returns [] when there are none."""
     out: list[str] = []
     for op in _layer_extra_ops(bindings, behaviors, macros):
         visual = _html_visual_layer(bindings, behaviors, macros, geom, unit, op=op)
         if not visual:
             continue
-        out.append(f'<h3>{_html_text(f"{layer_name} レイヤー（{EXTRA_OP_HEADING[op]}）")}</h3>')
+        out.append(f'<div class="fig-caption">{_html_text(EXTRA_OP_HEADING[op])}</div>')
         out += visual
+    return out
+
+
+def _html_figure_table(layers_data: list[tuple[str, list[str]]],
+                       behaviors: dict, macros: dict, geom, unit) -> list[str]:
+    """Render every layer's visual figures as one big table: one row per layer,
+    layer name in the left header cell, and ALL of that layer's figures (the main
+    figure plus its Tap Dance / Mod Morph figures) stacked in the single right
+    cell. Returns [] when no layer produces a figure."""
+    rows: list[str] = []
+    for layer_name, bindings in layers_data:
+        visual = _html_visual_layer(bindings, behaviors, macros, geom, unit)
+        if not visual:
+            continue
+        rows.append('<tr>')
+        rows.append(f'<th class="fig-layer">{_html_text(layer_name)}</th>')
+        rows.append('<td class="fig-cell">')
+        rows += visual
+        rows += _html_extra_visual_layers(bindings, behaviors, macros, geom, unit)
+        rows.append('</td>')
+        rows.append('</tr>')
+    if not rows:
+        return []
+    out = ['<table class="figures">', '<thead>', '<tr>',
+           f'<th>{_html_text("レイヤー")}</th>',
+           f'<th>{_html_text("レイアウト図")}</th>',
+           '</tr>', '</thead>', '<tbody>']
+    out += rows
+    out += ['</tbody>', '</table>']
     return out
 
 
@@ -1490,17 +1547,18 @@ def write_html(layers_data: list[tuple[str, list[str]]],
         body.append('<li>' + _html_inline('各 row セクション行に「キーラベル」と「バインディング (`&...`)」の 2 段表示でキー位置を示す。') + '</li>')
         body.append('<li>' + _html_inline('各表の左端 1 列が「操作」（タップ / ホールド / ダブルタップ / Shift+ / Ctrl+）または「Row N」見出し。') + '</li>')
         body.append('</ul>')
-        visual = _html_visual_layer(bindings, behaviors, macros, geom, unit)
-        if visual:
+        figure_table = _html_figure_table(layers_data, behaviors, macros, geom, unit)
+        if figure_table:
             body.append(f'<h2>{_html_inline("レイアウト図")}</h2>')
             body.append('<p>' + _html_inline(
-                'キーを実機の物理配列どおりに配置。各キーは「ラベル / タップ動作 / (ホールド動作)」を表示し、'
+                'キーを実機の物理配列どおりに配置した図を表にまとめる。表の各行が 1 レイヤーで、'
+                '左列がレイヤー名、右のセルがそのレイヤーの図。'
+                '各キーは「ラベル / タップ動作 / (ホールド動作)」を表示し、'
                 '全操作（ダブルタップ / Shift+ / Ctrl+ など）はマウスオーバーのツールチップで確認できる。'
-                'Tap Dance / Mod Morph の割り当てがある場合は、その操作専用の図を追加表示する'
+                'Tap Dance / Mod Morph の割り当てがある場合は、その操作専用の図を同じセル内に追加表示する'
                 '（割り当てのないキーは薄い枠のみ）。'
             ) + '</p>')
-            body += visual
-            body += _html_extra_visual_layers(layer_name, bindings, behaviors, macros, geom, unit)
+            body += figure_table
         for mode_label, mode in [('動作', 'action'), ('経路', 'path')]:
             body.append(f'<h2>{_html_inline(mode_label)}</h2>')
             header, rows = _build_layer_mode_table(bindings, behaviors, macros, mode,
@@ -1519,22 +1577,21 @@ def write_html(layers_data: list[tuple[str, list[str]]],
         body.append('<li>' + _html_inline('各表の左端 1 列が「操作」（タップ / ホールド / ダブルタップ / Shift+ / Ctrl+）または「Row N」見出し。') + '</li>')
         body.append('</ul>')
 
-        # Visual physical-layout figure per layer (keys placed by real coordinates).
+        # Visual physical-layout figures, collected into one big table:
+        # one row per layer, every figure of that layer in the same cell.
         if geom is not None:
-            body.append(f'<h2>{_html_inline("レイアウト図")}</h2>')
-            body.append('<p>' + _html_inline(
-                '各レイヤーを実機の物理配列どおりに配置。各キーは「ラベル / タップ動作 / (ホールド動作)」を表示し、'
-                '全操作（ダブルタップ / Shift+ / Ctrl+ など）はマウスオーバーのツールチップで確認できる。'
-                'Tap Dance / Mod Morph の割り当てがあるレイヤーには、その操作専用の図を追加表示する'
-                '（割り当てのないキーは薄い枠のみ）。'
-            ) + '</p>')
-            for layer_name, bindings in layers_data:
-                visual = _html_visual_layer(bindings, behaviors, macros, geom, unit)
-                if not visual:
-                    continue
-                body.append(f'<h3>{_html_text(f"{layer_name} レイヤー")}</h3>')
-                body += visual
-                body += _html_extra_visual_layers(layer_name, bindings, behaviors, macros, geom, unit)
+            figure_table = _html_figure_table(layers_data, behaviors, macros, geom, unit)
+            if figure_table:
+                body.append(f'<h2>{_html_inline("レイアウト図")}</h2>')
+                body.append('<p>' + _html_inline(
+                    '各レイヤーを実機の物理配列どおりに配置した図を 1 つの表にまとめる。表の各行が 1 レイヤーで、'
+                    '左列がレイヤー名、右のセルがそのレイヤーの図。'
+                    '各キーは「ラベル / タップ動作 / (ホールド動作)」を表示し、'
+                    '全操作（ダブルタップ / Shift+ / Ctrl+ など）はマウスオーバーのツールチップで確認できる。'
+                    'Tap Dance / Mod Morph の割り当てがあるレイヤーには、その操作専用の図を同じセル内に追加表示する'
+                    '（割り当てのないキーは薄い枠のみ）。'
+                ) + '</p>')
+                body += figure_table
 
         # Positions that are `&none` in the DEFAULT layer are inactive and
         # hidden in every layer's table.

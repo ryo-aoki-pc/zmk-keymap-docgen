@@ -8,7 +8,10 @@ match the board's real physical arrangement (including the split gap). The
 `.html` additionally renders each layer as a **visual layout figure** — keys
 positioned by their real coordinates (so column stagger, the split gap and key
 rotation all show), with the tap action on the cap, the hold action below it,
-and every operation in a hover tooltip. Key-cap text on the figure is kept
+and every operation in a hover tooltip. The figures are collected into a single
+table: one row per layer, with the layer name in the left header cell and every
+figure belonging to that layer — the main figure plus its Tap Dance / Mod Morph
+figures — stacked together in the right cell. Key-cap text on the figure is kept
 compact without losing information: layer jumps show as `L<n>` instead of the
 layer node name, and macro chains are stacked one step per line with the font
 size shrinking automatically so the full content fits inside the key box.
