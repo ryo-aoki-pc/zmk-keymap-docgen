@@ -1274,6 +1274,41 @@ def _fmt_px(v: float) -> str:
     return f'{v:g}'
 
 
+# Bare modifier labels that show up in macro summaries as press/release
+# housekeeping steps (e.g. "&macro_release  &kp LSHIFT &kp RSHIFT"). They are
+# not the macro's meaningful effect, so the figure caption drops them.
+_FIGURE_MODIFIER_STEPS = frozenset((
+    'LShift', 'RShift', 'LCtrl', 'RCtrl', 'LAlt', 'RAlt',
+    'LWin', 'RWin', 'LGui', 'RGui', 'LCmd', 'RCmd',
+))
+
+
+def _figure_text(text: str) -> str:
+    """Compact a resolved action string for a figure key cap.
+
+    The figure's key boxes are small, so long notations are simplified here
+    only — the hover tooltip and the 動作 / 経路 tables keep the full detail:
+      - layer-jump targets render as L<n> instead of the layer node name
+      - macro step chains drop bare-modifier housekeeping steps, then collapse
+        to "first…last" when more than two steps remain
+    """
+    if not text:
+        return text
+    # ⇒<layer node name> -> ⇒L<n> (longest names first to avoid partial hits)
+    for idx, name in sorted(LAYER_NAMES_BY_INDEX.items(),
+                            key=lambda kv: len(kv[1]), reverse=True):
+        text = text.replace(f'⇒{name}', f'⇒L{idx}')
+    # Macro step chains
+    steps = text.split(' ▸ ')
+    if len(steps) > 1:
+        meaningful = [s for s in steps if s not in _FIGURE_MODIFIER_STEPS]
+        steps = meaningful or steps
+        if len(steps) > 2:
+            return f'{steps[0]}…{steps[-1]}'
+        return ' ▸ '.join(steps)
+    return text
+
+
 def _visual_key_html(idx: int, binding: str, g: dict, scale: float, unit: float,
                      behaviors: dict, macros: dict, op: str = 'タップ') -> str:
     """Render one absolutely-positioned key box for the visual layout figure.
@@ -1316,7 +1351,7 @@ def _visual_key_html(idx: int, binding: str, g: dict, scale: float, unit: float,
         if b != '&none' and label:
             parts.append(f'<span class="kl">{_html_text(label)}</span>')
         if assigned:
-            parts.append(f'<span class="kt">{_html_text(actions[op])}</span>')
+            parts.append(f'<span class="kt">{_html_text(_figure_text(actions[op]))}</span>')
         parts.append('</div>')
         return ''.join(parts)
 
@@ -1329,11 +1364,11 @@ def _visual_key_html(idx: int, binding: str, g: dict, scale: float, unit: float,
     parts = [f'<div class="{cls}" style="{style}" title="{tip}">']
     if b != '&none' and label:
         parts.append(f'<span class="kl">{_html_text(label)}</span>')
-    parts.append(f'<span class="kt">{_html_text(tap)}</span>')
+    parts.append(f'<span class="kt">{_html_text(_figure_text(tap))}</span>')
     # Show the hold action only when it is a distinct assignment (not just the
     # tap value repeated), matching the table's "auto-derived" suppression.
     if hold and hold not in _auto_forms(tap, 'ホールド'):
-        parts.append(f'<span class="kh">{_html_text(hold)}</span>')
+        parts.append(f'<span class="kh">{_html_text(_figure_text(hold))}</span>')
     parts.append('</div>')
     return ''.join(parts)
 
