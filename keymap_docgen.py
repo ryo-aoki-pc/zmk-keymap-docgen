@@ -1174,6 +1174,9 @@ HTML_STYLE = """\
   .key .kt.sz7 { font-size: 7px; font-weight: 500; overflow-wrap: anywhere; }
   .key .kh.sz10, .key .kh.sz9 { font-size: 8px; overflow-wrap: anywhere; }
   .key .kh.sz8, .key .kh.sz7 { font-size: 7px; overflow-wrap: anywhere; }
+  /* Stacked macro steps: the text block stays centered inside the key
+     (flex align-items) while its lines are left-aligned with each other. */
+  .key .kt.mac, .key .kh.mac { text-align: left; }
   .key.none { background: #f0f1f2; border-style: dashed; opacity: .45; box-shadow: none; }
   .key.trans { background: #f7f8fa; }
   .key.trans .kt { color: #8a939b; font-weight: 400; }
@@ -1305,24 +1308,29 @@ def _display_width(s: str) -> float:
 
 
 def _figure_key_face(text: str) -> tuple[str, str]:
-    """Build (inner_html, size_class) for a figure key-cap text.
+    """Build (inner_html, css_classes) for a figure key-cap text.
 
-    Nothing is omitted: macro step chains are stacked one step per line, and
-    the font-size class shrinks as the content grows so the full text fits
-    inside the key box. Returns ready-to-insert (escaped) HTML plus the CSS
-    size class ('' = default size).
+    Nothing is omitted: macro step chains are stacked one step per line
+    (continuation lines get a leading ▸), and the font-size class shrinks as
+    the content grows so the full text fits inside the key box. Multi-line
+    content also gets the 'mac' class: the block sits centered in the key
+    while its lines stay left-aligned with each other. Returns
+    ready-to-insert (escaped) HTML plus the CSS classes ('' = default size).
     """
     steps = text.split(' ▸ ')
     if len(steps) > 1:
-        html = '<br>'.join(_html_text(s) for s in steps)
-        widest = max(_display_width(s) for s in steps)
+        escaped = [_html_text(s) for s in steps]
+        html = escaped[0] + ''.join(f'<br>▸{s}' for s in escaped[1:])
+        # Continuation lines carry the leading ▸, so include it in their width.
+        widest = max(_display_width(s) + (0.0 if i == 0 else 2.0)
+                     for i, s in enumerate(steps))
         if len(steps) <= 2 and widest <= 7:
-            return html, 'sz10'
+            return html, 'sz10 mac'
         if len(steps) <= 3 and widest <= 9:
-            return html, 'sz9'
+            return html, 'sz9 mac'
         if len(steps) <= 4 and widest <= 11:
-            return html, 'sz8'
-        return html, 'sz7'
+            return html, 'sz8 mac'
+        return html, 'sz7 mac'
     w = _display_width(text)
     if w <= 7:
         return _html_text(text), ''
