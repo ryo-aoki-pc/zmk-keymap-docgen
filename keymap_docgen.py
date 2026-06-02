@@ -1164,16 +1164,16 @@ HTML_STYLE = """\
     cursor: default;
   }
   .key .kl { font-size: 8px; color: #8a939b; align-self: flex-start; max-width: 100%; overflow: hidden; }
-  .key .kt { font-size: 12px; font-weight: 600; color: #1f2328; max-width: 100%; overflow: hidden; }
-  .key .kh { font-size: 9px; color: #0969da; max-width: 100%; overflow: hidden; }
+  .key .kt { font-size: 12px; font-weight: 600; color: #1f2328; max-width: 100%; overflow: hidden; overflow-wrap: anywhere; }
+  .key .kh { font-size: 9px; color: #0969da; max-width: 100%; overflow: hidden; overflow-wrap: anywhere; }
   /* Auto-shrunk key-cap text: long content (e.g. every step of a macro) keeps
      its full text and only gets a smaller font so it fits inside the key box. */
-  .key .kt.sz10 { font-size: 10px; overflow-wrap: anywhere; }
-  .key .kt.sz9 { font-size: 9px; overflow-wrap: anywhere; }
-  .key .kt.sz8 { font-size: 8px; font-weight: 500; overflow-wrap: anywhere; }
-  .key .kt.sz7 { font-size: 7px; font-weight: 500; overflow-wrap: anywhere; }
-  .key .kh.sz10, .key .kh.sz9 { font-size: 8px; overflow-wrap: anywhere; }
-  .key .kh.sz8, .key .kh.sz7 { font-size: 7px; overflow-wrap: anywhere; }
+  .key .kt.sz10 { font-size: 10px; }
+  .key .kt.sz9 { font-size: 9px; }
+  .key .kt.sz8 { font-size: 8px; font-weight: 500; }
+  .key .kt.sz7 { font-size: 7px; font-weight: 500; }
+  .key .kh.sz10, .key .kh.sz9 { font-size: 8px; }
+  .key .kh.sz8, .key .kh.sz7 { font-size: 7px; }
   /* Stacked macro steps: the text block stays centered inside the key
      (flex align-items) while its lines are left-aligned with each other. */
   .key .kt.mac, .key .kh.mac { text-align: left; }
@@ -1329,9 +1329,32 @@ def _figure_text(text: str) -> str:
 
 
 def _display_width(s: str) -> float:
-    """Rough visual width of a string in narrow-character units."""
-    return sum(2.0 if unicodedata.east_asian_width(ch) in ('W', 'F', 'A') else 1.0
-               for ch in s)
+    """Rough visual width of a string in narrow-character units.
+
+    Non-ASCII characters — modifier symbols (⇧ ⌃), arrows, the ▸ step marker,
+    CJK text — all render notably wider than ASCII letters in the figure font,
+    so they count as 2 units each.
+    """
+    return sum(1.0 if ord(ch) < 128 else 2.0 for ch in s)
+
+
+# Key-cap font size classes, largest to smallest. The key box has ~40px of
+# usable width; a weight-600 letter is ≈0.65 × font-size px wide, so each size
+# step buys roughly one more width unit of text.
+_SIZE_CLASSES = ('', 'sz10', 'sz9', 'sz8', 'sz7')
+
+
+def _width_size_index(width: float) -> int:
+    """Smallest _SIZE_CLASSES index whose font fits `width` units into the box."""
+    if width <= 5:
+        return 0  # 12px
+    if width <= 6:
+        return 1  # 10px
+    if width <= 7:
+        return 2  # 9px
+    if width <= 8:
+        return 3  # 8px
+    return 4      # 7px (+ wrapping)
 
 
 def _figure_key_face(text: str) -> tuple[str, str]:
@@ -1339,10 +1362,11 @@ def _figure_key_face(text: str) -> tuple[str, str]:
 
     Nothing is omitted: macro step chains are stacked one step per line
     (continuation lines get a leading ▸), and the font-size class shrinks as
-    the content grows so the full text fits inside the key box. Multi-line
-    content also gets the 'mac' class: the block sits centered in the key
-    while its lines stay left-aligned with each other. Returns
-    ready-to-insert (escaped) HTML plus the CSS classes ('' = default size).
+    the content grows — by the widest line and by the number of lines — so the
+    full text fits inside the key box. Multi-line content also gets the 'mac'
+    class: the block sits centered in the key while its lines stay left-aligned
+    with each other. Returns ready-to-insert (escaped) HTML plus the CSS
+    classes ('' = default size).
     """
     steps = text.split(' ▸ ')
     if len(steps) > 1:
@@ -1351,23 +1375,12 @@ def _figure_key_face(text: str) -> tuple[str, str]:
         # Continuation lines carry the leading ▸, so include it in their width.
         widest = max(_display_width(s) + (0.0 if i == 0 else 2.0)
                      for i, s in enumerate(steps))
-        if len(steps) <= 2 and widest <= 7:
-            return html, 'sz10 mac'
-        if len(steps) <= 3 and widest <= 9:
-            return html, 'sz9 mac'
-        if len(steps) <= 4 and widest <= 11:
-            return html, 'sz8 mac'
-        return html, 'sz7 mac'
-    w = _display_width(text)
-    if w <= 7:
-        return _html_text(text), ''
-    if w <= 10:
-        return _html_text(text), 'sz10'
-    if w <= 13:
-        return _html_text(text), 'sz9'
-    if w <= 18:
-        return _html_text(text), 'sz8'
-    return _html_text(text), 'sz7'
+        # Vertical fit: more lines force a smaller font regardless of width.
+        by_height = {1: 0, 2: 0, 3: 1, 4: 3}.get(len(steps), 4)
+        size = _SIZE_CLASSES[max(_width_size_index(widest), by_height)]
+        return html, f'{size} mac'.strip()
+    size = _SIZE_CLASSES[_width_size_index(_display_width(text))]
+    return _html_text(text), size
 
 
 def _figure_span(css_class: str, text: str) -> str:
