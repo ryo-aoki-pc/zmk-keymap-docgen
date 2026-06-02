@@ -1166,6 +1166,14 @@ HTML_STYLE = """\
   .key .kl { font-size: 8px; color: #8a939b; align-self: flex-start; max-width: 100%; overflow: hidden; }
   .key .kt { font-size: 12px; font-weight: 600; color: #1f2328; max-width: 100%; overflow: hidden; }
   .key .kh { font-size: 9px; color: #0969da; max-width: 100%; overflow: hidden; }
+  /* Auto-shrunk key-cap text: long content (e.g. every step of a macro) keeps
+     its full text and only gets a smaller font so it fits inside the key box. */
+  .key .kt.sz10 { font-size: 10px; overflow-wrap: anywhere; }
+  .key .kt.sz9 { font-size: 9px; overflow-wrap: anywhere; }
+  .key .kt.sz8 { font-size: 8px; font-weight: 500; overflow-wrap: anywhere; }
+  .key .kt.sz7 { font-size: 7px; font-weight: 500; overflow-wrap: anywhere; }
+  .key .kh.sz10, .key .kh.sz9 { font-size: 8px; overflow-wrap: anywhere; }
+  .key .kh.sz8, .key .kh.sz7 { font-size: 7px; overflow-wrap: anywhere; }
   .key.none { background: #f0f1f2; border-style: dashed; opacity: .45; box-shadow: none; }
   .key.trans { background: #f7f8fa; }
   .key.trans .kt { color: #8a939b; font-weight: 400; }
@@ -1274,23 +1282,12 @@ def _fmt_px(v: float) -> str:
     return f'{v:g}'
 
 
-# Bare modifier labels that show up in macro summaries as press/release
-# housekeeping steps (e.g. "&macro_release  &kp LSHIFT &kp RSHIFT"). They are
-# not the macro's meaningful effect, so the figure caption drops them.
-_FIGURE_MODIFIER_STEPS = frozenset((
-    'LShift', 'RShift', 'LCtrl', 'RCtrl', 'LAlt', 'RAlt',
-    'LWin', 'RWin', 'LGui', 'RGui', 'LCmd', 'RCmd',
-))
-
-
 def _figure_text(text: str) -> str:
-    """Compact a resolved action string for a figure key cap.
+    """Rewrite a resolved action string for a figure key cap.
 
-    The figure's key boxes are small, so long notations are simplified here
-    only — the hover tooltip and the 動作 / 経路 tables keep the full detail:
-      - layer-jump targets render as L<n> instead of the layer node name
-      - macro step chains drop bare-modifier housekeeping steps, then collapse
-        to "first…last" when more than two steps remain
+    Layer-jump targets render as L<n> instead of the (long) layer node name.
+    This applies to the figure only — the hover tooltip and the 動作 / 経路
+    tables keep the formal layer names.
     """
     if not text:
         return text
@@ -1298,15 +1295,51 @@ def _figure_text(text: str) -> str:
     for idx, name in sorted(LAYER_NAMES_BY_INDEX.items(),
                             key=lambda kv: len(kv[1]), reverse=True):
         text = text.replace(f'⇒{name}', f'⇒L{idx}')
-    # Macro step chains
+    return text
+
+
+def _display_width(s: str) -> float:
+    """Rough visual width of a string in narrow-character units."""
+    return sum(2.0 if unicodedata.east_asian_width(ch) in ('W', 'F', 'A') else 1.0
+               for ch in s)
+
+
+def _figure_key_face(text: str) -> tuple[str, str]:
+    """Build (inner_html, size_class) for a figure key-cap text.
+
+    Nothing is omitted: macro step chains are stacked one step per line, and
+    the font-size class shrinks as the content grows so the full text fits
+    inside the key box. Returns ready-to-insert (escaped) HTML plus the CSS
+    size class ('' = default size).
+    """
     steps = text.split(' ▸ ')
     if len(steps) > 1:
-        meaningful = [s for s in steps if s not in _FIGURE_MODIFIER_STEPS]
-        steps = meaningful or steps
-        if len(steps) > 2:
-            return f'{steps[0]}…{steps[-1]}'
-        return ' ▸ '.join(steps)
-    return text
+        html = '<br>'.join(_html_text(s) for s in steps)
+        widest = max(_display_width(s) for s in steps)
+        if len(steps) <= 2 and widest <= 7:
+            return html, 'sz10'
+        if len(steps) <= 3 and widest <= 9:
+            return html, 'sz9'
+        if len(steps) <= 4 and widest <= 11:
+            return html, 'sz8'
+        return html, 'sz7'
+    w = _display_width(text)
+    if w <= 7:
+        return _html_text(text), ''
+    if w <= 10:
+        return _html_text(text), 'sz10'
+    if w <= 13:
+        return _html_text(text), 'sz9'
+    if w <= 18:
+        return _html_text(text), 'sz8'
+    return _html_text(text), 'sz7'
+
+
+def _figure_span(css_class: str, text: str) -> str:
+    """Render a figure key-cap <span> (kt / kh) with auto-shrinking font size."""
+    face, size = _figure_key_face(_figure_text(text))
+    cls = f'{css_class} {size}' if size else css_class
+    return f'<span class="{cls}">{face}</span>'
 
 
 def _visual_key_html(idx: int, binding: str, g: dict, scale: float, unit: float,
@@ -1351,7 +1384,7 @@ def _visual_key_html(idx: int, binding: str, g: dict, scale: float, unit: float,
         if b != '&none' and label:
             parts.append(f'<span class="kl">{_html_text(label)}</span>')
         if assigned:
-            parts.append(f'<span class="kt">{_html_text(_figure_text(actions[op]))}</span>')
+            parts.append(_figure_span('kt', actions[op]))
         parts.append('</div>')
         return ''.join(parts)
 
@@ -1364,11 +1397,11 @@ def _visual_key_html(idx: int, binding: str, g: dict, scale: float, unit: float,
     parts = [f'<div class="{cls}" style="{style}" title="{tip}">']
     if b != '&none' and label:
         parts.append(f'<span class="kl">{_html_text(label)}</span>')
-    parts.append(f'<span class="kt">{_html_text(_figure_text(tap))}</span>')
+    parts.append(_figure_span('kt', tap))
     # Show the hold action only when it is a distinct assignment (not just the
     # tap value repeated), matching the table's "auto-derived" suppression.
     if hold and hold not in _auto_forms(tap, 'ホールド'):
-        parts.append(f'<span class="kh">{_html_text(_figure_text(hold))}</span>')
+        parts.append(_figure_span('kh', hold))
     parts.append('</div>')
     return ''.join(parts)
 
