@@ -16,6 +16,14 @@ compact without losing information: layer jumps show as `L<n>` instead of the
 layer node name, and macro chains are stacked one step per line with the font
 size shrinking automatically so the full content fits inside the key box.
 
+The HTML's **経路 (resolution path) section** uses the same physical-layout
+figure style: each key cap shows its behavior-resolution chain
+(`behavior[index] ▸ … ▸ final binding`) at double key size so the longer path
+strings stay readable, with extra figures for operations whose path diverges
+(Tap Dance / Mod Morph) and the full per-operation paths in hover tooltips.
+When no usable layout geometry is available, the section falls back to the
+legacy table form.
+
 The script itself contains **no keyboard-specific data**. Everything particular
 to a board — each key's physical position *and its display label* — lives in a
 small per-keyboard layout JSON, so the same `keymap_docgen.py` can be vendored
