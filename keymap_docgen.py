@@ -7,9 +7,10 @@ ZMK keymap (.keymap) のレイヤー（指定がなければ全レイヤー）�
   1. Excel ファイル (.xlsx)
        - "動作" シートと "経路" シートを生成し、各シートに全レイヤーの表を縦に並べる
   2. 自己完結型 HTML ファイル (.html)
-       - 同じ内容を HTML の表で出力（「Row N」見出し行を背景色でハイライト）
-       - 複数レイヤー指定時は「動作」セクションに全レイヤーを並べた後、
-         「経路」セクションに全レイヤーを再度並べる構成
+       - 「レイアウト図」セクション（物理配列どおりのキー図）と「経路」セクションを出力
+         （「Row N」見出し行を背景色でハイライト）
+       - 「動作」の内容はレイアウト図（キー表示とツールチップ）で確認できるため
+         HTML には出力しない
 
 それぞれの表は、キーボード物理行ごとに以下の構造を持つ：
   - 左端 1 列: 「操作」 = タップ / ホールド / ダブルタップ / Shift+ / Ctrl+
@@ -1545,8 +1546,10 @@ def write_html(layers_data: list[tuple[str, list[str]]],
                behaviors: dict, macros: dict, output_path: Path,
                grid, display_cols, geom=None, unit=None) -> None:
     """Generate one standalone HTML file.
-    Single layer  => H1 layer title, then H2 動作 / H2 経路.
-    Multi layers  => H1 top title, H2 動作 (each layer at H3), then H2 経路."""
+    Single layer  => H1 layer title, then H2 レイアウト図 / H2 経路.
+    Multi layers  => H1 top title, H2 レイアウト図 (one row per layer), then H2 経路.
+    動作 tables are not emitted: the layout figure (key caps + hover tooltips)
+    already shows the same resolved-action information."""
     body: list[str] = []
 
     if len(layers_data) == 1:
@@ -1572,7 +1575,9 @@ def write_html(layers_data: list[tuple[str, list[str]]],
                 '（割り当てのないキーは薄い枠のみ）。'
             ) + '</p>')
             body += figure_table
-        for mode_label, mode in [('動作', 'action'), ('経路', 'path')]:
+        # 動作 table is omitted: the layout figure above already shows the
+        # same resolved actions (key caps + tooltips).
+        for mode_label, mode in [('経路', 'path')]:
             body.append(f'<h2>{_html_inline(mode_label)}</h2>')
             header, rows = _build_layer_mode_table(bindings, behaviors, macros, mode,
                                                    grid, display_cols)
@@ -1582,7 +1587,8 @@ def write_html(layers_data: list[tuple[str, list[str]]],
         body.append(f'<h1>{_html_inline("キー割り当て一覧")}</h1>')
         body.append('<p>' + _html_inline(
             f'※ {len(layers_data)} 個のレイヤーのキー割り当てを 1 ファイルに集約。'
-            f'各レイヤーを実機の物理配列に合わせて「動作」セクションでまとめてから「経路」セクションに進む。'
+            f'各レイヤーの動作は実機の物理配列に合わせた「レイアウト図」セクションで確認し、'
+            f'バインディングの解決過程は「経路」セクションで確認する。'
         ) + '</p>')
         body.append('<ul>')
         body.append('<li>' + _html_inline('各 row セクション行に「キーラベル」と「バインディング (`&...`)」の 2 段表示でキー位置を示す。') + '</li>')
@@ -1610,7 +1616,9 @@ def write_html(layers_data: list[tuple[str, list[str]]],
         # hidden in every layer's table.
         active_indices = _compute_active_indices(layers_data)
 
-        for mode_label, mode in [('動作', 'action'), ('経路', 'path')]:
+        # 動作 tables are omitted: the layout figures above already show the
+        # same resolved actions (key caps + tooltips).
+        for mode_label, mode in [('経路', 'path')]:
             body.append(f'<h2>{_html_inline(mode_label)}</h2>')
             # Merge every layer's rows into a single table so the column widths
             # (which the browser auto-sizes per-table) line up across layers.
