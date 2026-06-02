@@ -7,12 +7,14 @@ ZMK keymap (.keymap) のレイヤー（指定がなければ全レイヤー）�
   1. Excel ファイル (.xlsx)
        - "動作" シートと "経路" シートを生成し、各シートに全レイヤーの表を縦に並べる
   2. 自己完結型 HTML ファイル (.html)
-       - 「レイアウト図」セクション（物理配列どおりのキー図）と「経路」セクションを出力
-         （「Row N」見出し行を背景色でハイライト）
+       - 「レイアウト図」と「経路」の 2 セクションを、いずれも物理配列どおりのキー図で出力
+       - 「レイアウト図」は各キーに解決済みの動作を、「経路」は behavior の解決経路を表示
+         （経路は長いためキーをレイアウト図の 2 倍サイズで描画。
+          物理配列 JSON が無い場合、経路は従来の表形式にフォールバック）
        - 「動作」の内容はレイアウト図（キー表示とツールチップ）で確認できるため
          HTML には出力しない
 
-それぞれの表は、キーボード物理行ごとに以下の構造を持つ：
+Excel の各シート（および HTML のフォールバック表）は、キーボード物理行ごとに以下の構造を持つ：
   - 左端 1 列: 「操作」 = タップ / ホールド / ダブルタップ / Shift+ / Ctrl+
   - 右側の列: その物理行のキーを物理配列順に並べたもの
 
@@ -604,6 +606,9 @@ GAP = 'GAP'  # sentinel marking a blank split-gap display column
 # whose tiny stagger offsets must not become the unit — render at a sensible size).
 KEY_PX = 52
 KEY_GAP_PX = 4
+# The 経路 (path) figures show behavior-resolution chains, which are much longer
+# than resolved actions, so their keys render at twice the layout-figure size.
+PATH_KEY_PX = 104
 
 
 def load_physical_layout(path: Path):
@@ -981,6 +986,24 @@ def _op_assigned(tap_val: str, op_val: str, op: str) -> bool:
     return op_val not in ('', '▽') and op_val not in _auto_forms(tap_val, op)
 
 
+def _op_distinct(resolved: dict[str, tuple[str, str]], op: str, mode: str) -> bool:
+    """True when `op` has a distinct assignment for the given figure mode.
+
+    action mode: the op's resolved action is a real assignment (not the
+    auto-derived tap form) — same rule as the tables (_op_assigned).
+    path mode: the op's resolution path differs from the tap path. This must be
+    path-based: e.g. a tap-dance whose branches resolve to the same action still
+    has different paths (td[0] ▸ … vs td[1] ▸ …), which is exactly what the
+    経路 figures exist to show."""
+    tap_action = _normalize_cell(resolved['タップ'][0])
+    op_action = _normalize_cell(resolved[op][0])
+    if mode == 'action':
+        return _op_assigned(tap_action, op_action, op)
+    tap_path = _normalize_cell(resolved['タップ'][1])
+    op_path = _normalize_cell(resolved[op][1])
+    return op_path not in ('', '▽') and op_path != tap_path
+
+
 def _split_cell_lines(value: str) -> list[str]:
     """Split a cell value into display lines at each ' ▸ ' separator, keeping the
     '▸' marker at the start of the continuation line. Values without a separator
@@ -1184,6 +1207,29 @@ HTML_STYLE = """\
   /* Extra-op figures (Tap Dance / Mod Morph): keys without a distinct assignment. */
   .key.dim { background: #fafbfc; border-style: dashed; border-color: #d8dde2; opacity: .4; box-shadow: none; }
   .key.dim .kl { color: #b1b8be; }
+  /* 経路 (path) figures: double-size keys showing behavior-resolution chains.
+     The boxes are 2x, so every font-size class scales up accordingly, path
+     identifiers render in monospace, and over-long single steps wrap instead
+     of clipping. */
+  .kb.path .key .kt {
+    font-size: 14px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    overflow-wrap: anywhere;
+    word-break: break-all;
+  }
+  .kb.path .key .kt.sz10 { font-size: 12px; }
+  .kb.path .key .kt.sz9 { font-size: 11px; }
+  .kb.path .key .kt.sz8 { font-size: 10px; }
+  .kb.path .key .kt.sz7 { font-size: 9px; }
+  .kb.path .key .kh {
+    font-size: 11px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    overflow-wrap: anywhere;
+    word-break: break-all;
+  }
+  .kb.path .key .kh.sz10, .kb.path .key .kh.sz9 { font-size: 10px; }
+  .kb.path .key .kh.sz8, .kb.path .key .kh.sz7 { font-size: 9px; }
+  .kb.path .key .kl { font-size: 10px; }
   /* Layout-figure table: one row per layer; the layer's main figure and its
      Tap Dance / Mod Morph figures all share the single right-hand cell. */
   table.figures { width: auto; }
@@ -1314,18 +1360,22 @@ def _fmt_px(v: float) -> str:
 
 
 def _figure_text(text: str) -> str:
-    """Rewrite a resolved action string for a figure key cap.
+    """Rewrite a resolved action / path string for a figure key cap.
 
     Layer-jump targets render as L<n> instead of the (long) layer node name.
-    This applies to the figure only — the hover tooltip and the 動作 / 経路
-    tables keep the formal layer names.
+    Both the action form (⇒<name>) and the path forms (&lt <name> KEY,
+    &mo <name>, &to <name>) are shortened so long layer names cannot overflow
+    the key box. This applies to the figure only — the hover tooltip and the
+    Excel tables keep the formal layer names.
     """
     if not text:
         return text
-    # ⇒<layer node name> -> ⇒L<n> (longest names first to avoid partial hits)
+    # Longest names first to avoid partial hits (e.g. VIM_NORMAL vs VIM_NORMAL_SYM).
     for idx, name in sorted(LAYER_NAMES_BY_INDEX.items(),
                             key=lambda kv: len(kv[1]), reverse=True):
         text = text.replace(f'⇒{name}', f'⇒L{idx}')
+        for prefix in ('&lt ', '&mo ', '&to '):
+            text = text.replace(f'{prefix}{name}', f'{prefix}L{idx}')
     return text
 
 
@@ -1358,16 +1408,18 @@ def _width_size_index(width: float) -> int:
     return 4      # 7px (+ wrapping)
 
 
-def _figure_key_face(text: str) -> tuple[str, str]:
+def _figure_key_face(text: str, box_scale: float = 1.0) -> tuple[str, str]:
     """Build (inner_html, css_classes) for a figure key-cap text.
 
-    Nothing is omitted: macro step chains are stacked one step per line
+    Nothing is omitted: macro / path step chains are stacked one step per line
     (continuation lines get a leading ▸), and the font-size class shrinks as
     the content grows — by the widest line and by the number of lines — so the
     full text fits inside the key box. Multi-line content also gets the 'mac'
     class: the block sits centered in the key while its lines stay left-aligned
-    with each other. Returns ready-to-insert (escaped) HTML plus the CSS
-    classes ('' = default size).
+    with each other. `box_scale` is the key box width as a multiple of the
+    standard KEY_PX box; wider boxes fit proportionally more text per line.
+    Returns ready-to-insert (escaped) HTML plus the CSS classes ('' = default
+    size).
     """
     steps = text.split(' ▸ ')
     if len(steps) > 1:
@@ -1378,26 +1430,30 @@ def _figure_key_face(text: str) -> tuple[str, str]:
                      for i, s in enumerate(steps))
         # Vertical fit: more lines force a smaller font regardless of width.
         by_height = {1: 0, 2: 0, 3: 1, 4: 3}.get(len(steps), 4)
-        size = _SIZE_CLASSES[max(_width_size_index(widest), by_height)]
+        size = _SIZE_CLASSES[max(_width_size_index(widest / box_scale), by_height)]
         return html, f'{size} mac'.strip()
-    size = _SIZE_CLASSES[_width_size_index(_display_width(text))]
+    size = _SIZE_CLASSES[_width_size_index(_display_width(text) / box_scale)]
     return _html_text(text), size
 
 
-def _figure_span(css_class: str, text: str) -> str:
+def _figure_span(css_class: str, text: str, box_scale: float = 1.0) -> str:
     """Render a figure key-cap <span> (kt / kh) with auto-shrinking font size."""
-    face, size = _figure_key_face(_figure_text(text))
+    face, size = _figure_key_face(_figure_text(text), box_scale)
     cls = f'{css_class} {size}' if size else css_class
     return f'<span class="{cls}">{face}</span>'
 
 
 def _visual_key_html(idx: int, binding: str, g: dict, scale: float, unit: float,
-                     behaviors: dict, macros: dict, op: str = 'タップ') -> str:
-    """Render one absolutely-positioned key box for the visual layout figure.
+                     behaviors: dict, macros: dict, op: str = 'タップ',
+                     mode: str = 'action', box_scale: float = 1.0) -> str:
+    """Render one absolutely-positioned key box for a visual figure.
 
     `op` selects which operation the key face shows. The default 'タップ' face
     shows tap + distinct hold; other ops (ダブルタップ / Shift+ / Ctrl+) show
-    only that op's distinct assignment and dim every unassigned key."""
+    only that op's distinct assignment and dim every unassigned key.
+    `mode` selects what the face displays: the resolved action ('action',
+    レイアウト図) or the behavior-resolution path ('path', 経路).
+    `box_scale` is the key box size as a multiple of the standard KEY_PX box."""
     w = (g['w'] if g['w'] is not None else unit) * scale - KEY_GAP_PX
     h = (g['h'] if g['h'] is not None else unit) * scale - KEY_GAP_PX
     left = g['x'] * scale
@@ -1410,13 +1466,25 @@ def _visual_key_html(idx: int, binding: str, g: dict, scale: float, unit: float,
         style += (f';transform:rotate({_fmt_px(g["r"])}deg)'
                   f';transform-origin:{_fmt_px(ox)}px {_fmt_px(oy)}px')
 
-    actions = {o: _normalize_cell(resolve(binding, behaviors, macros, o)[0]) for o in OPS}
-    tap, hold = actions['タップ'], actions['ホールド']
+    # Resolve every op once; each value is the (action, path) tuple.
+    resolved = {o: resolve(binding, behaviors, macros, o) for o in OPS}
+    sel = 0 if mode == 'action' else 1
+    faces = {o: _normalize_cell(resolved[o][sel]) for o in OPS}
+    actions = {o: _normalize_cell(resolved[o][0]) for o in OPS}
+    tap, hold = faces['タップ'], faces['ホールド']
 
     b = binding.strip()
 
-    # Tooltip: every operation that resolves to something, plus the raw binding.
-    tip_lines = [f'{o}: {actions[o]}' for o in OPS if actions[o]]
+    # Tooltip: action mode lists every operation that resolves to something;
+    # path mode lists the tap path plus only the ops whose path differs (most
+    # paths are identical across ops, so identical lines are just noise).
+    # Both end with the raw binding.
+    if mode == 'action':
+        tip_lines = [f'{o}: {actions[o]}' for o in OPS if actions[o]]
+    else:
+        tip_lines = [f'タップ: {tap}'] if tap else []
+        tip_lines += [f'{o}: {faces[o]}' for o in OPS
+                      if o != 'タップ' and faces[o] and faces[o] != tap]
     tip_lines.append(format_binding_for_display(binding))
     tip = _html_text('\n'.join(tip_lines)).replace('"', '&quot;').replace('\n', '&#10;')
 
@@ -1427,13 +1495,13 @@ def _visual_key_html(idx: int, binding: str, g: dict, scale: float, unit: float,
     if op != 'タップ':
         # Extra-op figure (Tap Dance / Mod Morph): show only keys with a distinct
         # assignment for this op; every other key is a dimmed empty outline.
-        assigned = _op_assigned(tap, actions[op], op)
+        assigned = _op_distinct(resolved, op, mode)
         cls = 'key' if assigned else 'key dim'
         parts = [f'<div class="{cls}" style="{style}" title="{tip}">']
         if b != '&none' and label:
             parts.append(f'<span class="kl">{_html_text(label)}</span>')
         if assigned:
-            parts.append(_figure_span('kt', actions[op]))
+            parts.append(_figure_span('kt', faces[op], box_scale))
         parts.append('</div>')
         return ''.join(parts)
 
@@ -1446,33 +1514,44 @@ def _visual_key_html(idx: int, binding: str, g: dict, scale: float, unit: float,
     parts = [f'<div class="{cls}" style="{style}" title="{tip}">']
     if b != '&none' and label:
         parts.append(f'<span class="kl">{_html_text(label)}</span>')
-    parts.append(_figure_span('kt', tap))
-    # Show the hold action only when it is a distinct assignment (not just the
-    # tap value repeated), matching the table's "auto-derived" suppression.
-    if hold and hold not in _auto_forms(tap, 'ホールド'):
-        parts.append(_figure_span('kh', hold))
+    parts.append(_figure_span('kt', tap, box_scale))
+    # Hold line: in action mode only when it is a distinct assignment (not just
+    # the tap value repeated), matching the table's "auto-derived" suppression.
+    # In path mode only when the hold path actually differs from the tap path
+    # (&mt / &lt resolve to the same path for tap and hold — nothing new to show).
+    if mode == 'action':
+        show_hold = hold and hold not in _auto_forms(tap, 'ホールド')
+    else:
+        show_hold = hold and hold != tap
+    if show_hold:
+        parts.append(_figure_span('kh', hold, box_scale))
     parts.append('</div>')
     return ''.join(parts)
 
 
 def _html_visual_layer(bindings: list[str], behaviors: dict, macros: dict,
                        geom: list[dict], unit: float | None = None,
-                       op: str = 'タップ') -> list[str]:
+                       op: str = 'タップ', mode: str = 'action',
+                       key_px: float = KEY_PX) -> list[str]:
     """Render a layer as a visual keyboard figure (keys placed by real x/y/w/h).
     `unit` (the layout's coordinate amount per 1u) is honored when given so
     fractional column-stagger offsets render at a sensible scale; otherwise it
-    is auto-detected. `op` selects the operation each key face shows (see
+    is auto-detected. `op` selects the operation each key face shows and `mode`
+    what it displays (action / path); `key_px` sets the rendered key size (see
     _visual_key_html). Returns [] when no usable geometry is available."""
     if not geom or len(geom) != len(bindings):
         return []
     if unit is None:
         unit = _layout_unit(geom)
-    scale = KEY_PX / unit
+    scale = key_px / unit
+    box_scale = key_px / KEY_PX
     width = max(((g['w'] if g['w'] is not None else unit) + g['x']) for g in geom) * scale
     height = max(((g['h'] if g['h'] is not None else unit) + g['y']) for g in geom) * scale
-    out = [f'<div class="kb" style="width:{_fmt_px(width)}px;height:{_fmt_px(height)}px">']
+    kb_cls = 'kb' if mode == 'action' else 'kb path'
+    out = [f'<div class="{kb_cls}" style="width:{_fmt_px(width)}px;height:{_fmt_px(height)}px">']
     for idx, (binding, g) in enumerate(zip(bindings, geom)):
-        out.append(_visual_key_html(idx, binding, g, scale, unit, behaviors, macros, op))
+        out.append(_visual_key_html(idx, binding, g, scale, unit, behaviors, macros,
+                                    op, mode, box_scale))
     out.append('</div>')
     return out
 
@@ -1486,26 +1565,31 @@ EXTRA_OP_HEADING = {
 }
 
 
-def _layer_extra_ops(bindings: list[str], behaviors: dict, macros: dict) -> list[str]:
+def _layer_extra_ops(bindings: list[str], behaviors: dict, macros: dict,
+                     mode: str = 'action') -> list[str]:
     """Ops (ダブルタップ / Shift+ / Ctrl+) for which this layer has at least one
-    key with a distinct assignment — each one gets an extra figure."""
-    taps = [_normalize_cell(resolve(b, behaviors, macros, 'タップ')[0]) for b in bindings]
+    key with a distinct assignment — each one gets an extra figure. Distinctness
+    follows the figure mode (action value vs resolution path, see _op_distinct)."""
     out = []
     for op in EXTRA_OP_HEADING:
-        vals = (_normalize_cell(resolve(b, behaviors, macros, op)[0]) for b in bindings)
-        if any(_op_assigned(t, v, op) for t, v in zip(taps, vals)):
-            out.append(op)
+        for b in bindings:
+            resolved = {o: resolve(b, behaviors, macros, o) for o in ('タップ', op)}
+            if _op_distinct(resolved, op, mode):
+                out.append(op)
+                break
     return out
 
 
 def _html_extra_visual_layers(bindings: list[str], behaviors: dict,
-                              macros: dict, geom, unit) -> list[str]:
+                              macros: dict, geom, unit, mode: str = 'action',
+                              key_px: float = KEY_PX) -> list[str]:
     """Extra figures (caption + figure) for every op the layer has distinct
     Tap Dance / Mod Morph assignments for. Rendered inside the layer's
     figure-table cell, below the main figure. Returns [] when there are none."""
     out: list[str] = []
-    for op in _layer_extra_ops(bindings, behaviors, macros):
-        visual = _html_visual_layer(bindings, behaviors, macros, geom, unit, op=op)
+    for op in _layer_extra_ops(bindings, behaviors, macros, mode):
+        visual = _html_visual_layer(bindings, behaviors, macros, geom, unit,
+                                    op=op, mode=mode, key_px=key_px)
         if not visual:
             continue
         out.append(f'<div class="fig-caption">{_html_text(EXTRA_OP_HEADING[op])}</div>')
@@ -1514,32 +1598,65 @@ def _html_extra_visual_layers(bindings: list[str], behaviors: dict,
 
 
 def _html_figure_table(layers_data: list[tuple[str, list[str]]],
-                       behaviors: dict, macros: dict, geom, unit) -> list[str]:
+                       behaviors: dict, macros: dict, geom, unit,
+                       mode: str = 'action') -> list[str]:
     """Render every layer's visual figures as one big table: one row per layer,
     layer name in the left header cell, and ALL of that layer's figures (the main
     figure plus its Tap Dance / Mod Morph figures) stacked in the single right
-    cell. Returns [] when no layer produces a figure."""
+    cell. `mode` selects the レイアウト図 (action faces, standard key size) or the
+    経路 figures (resolution-path faces, double key size). Returns [] when no
+    layer produces a figure."""
+    key_px = KEY_PX if mode == 'action' else PATH_KEY_PX
+    col_label = 'レイアウト図' if mode == 'action' else '経路'
     rows: list[str] = []
     for layer_name, bindings in layers_data:
-        visual = _html_visual_layer(bindings, behaviors, macros, geom, unit)
+        visual = _html_visual_layer(bindings, behaviors, macros, geom, unit,
+                                    mode=mode, key_px=key_px)
         if not visual:
             continue
         rows.append('<tr>')
         rows.append(f'<th class="fig-layer">{_html_text(layer_name)}</th>')
         rows.append('<td class="fig-cell">')
         rows += visual
-        rows += _html_extra_visual_layers(bindings, behaviors, macros, geom, unit)
+        rows += _html_extra_visual_layers(bindings, behaviors, macros, geom, unit,
+                                          mode, key_px)
         rows.append('</td>')
         rows.append('</tr>')
     if not rows:
         return []
     out = ['<table class="figures">', '<thead>', '<tr>',
            f'<th>{_html_text("レイヤー")}</th>',
-           f'<th>{_html_text("レイアウト図")}</th>',
+           f'<th>{_html_text(col_label)}</th>',
            '</tr>', '</thead>', '<tbody>']
     out += rows
     out += ['</tbody>', '</table>']
     return out
+
+
+# Prose shared by write_html: section intros for the figure-based sections and
+# the bullet list describing the table fallback (used only without geometry).
+_LAYOUT_FIGURE_INTRO = (
+    '各レイヤーを実機の物理配列どおりに配置した図を 1 つの表にまとめる。表の各行が 1 レイヤーで、'
+    '左列がレイヤー名、右のセルがそのレイヤーの図。'
+    '各キーは「ラベル / タップ動作 / (ホールド動作)」を表示し、'
+    '全操作（ダブルタップ / Shift+ / Ctrl+ など）はマウスオーバーのツールチップで確認できる。'
+    'Tap Dance / Mod Morph の割り当てがあるレイヤーには、その操作専用の図を同じセル内に追加表示する'
+    '（割り当てのないキーは薄い枠のみ）。'
+)
+_PATH_FIGURE_INTRO = (
+    '各レイヤーのバインディング解決経路を、レイアウト図と同じ物理配列の図で表示する'
+    '（経路は長いためキーはレイアウト図の 2 倍サイズ）。'
+    '各キーはタップ操作の解決経路（behavior 名[添字] ▸ … ▸ 最終バインディング）を表示し、'
+    'ホールドの経路がタップと異なる場合は青字で併記する。'
+    'Tap Dance / Mod Morph で経路が分岐するキーは、その操作専用の図を同じセル内に追加表示する'
+    '（分岐のないキーは薄い枠のみ）。'
+    '全操作の経路と生バインディングはマウスオーバーのツールチップで確認できる。'
+)
+_TABLE_FALLBACK_BULLETS = (
+    '各 row セクション行に「キーラベル」と「バインディング (`&...`)」の 2 段表示でキー位置を示す。',
+    '列は物理配列の左→右順。左右分割は中央の空列で分離する。',
+    '各表の左端 1 列が「操作」（タップ / ホールド / ダブルタップ / Shift+ / Ctrl+）または「Row N」見出し。',
+)
 
 
 def write_html(layers_data: list[tuple[str, list[str]]],
@@ -1549,37 +1666,47 @@ def write_html(layers_data: list[tuple[str, list[str]]],
     Single layer  => H1 layer title, then H2 レイアウト図 / H2 経路.
     Multi layers  => H1 top title, H2 レイアウト図 (one row per layer), then H2 経路.
     動作 tables are not emitted: the layout figure (key caps + hover tooltips)
-    already shows the same resolved-action information."""
+    already shows the same resolved-action information. The 経路 section uses
+    the same physical-layout figures (at double key size) showing each key's
+    behavior-resolution path; the legacy 経路 table is kept only as a fallback
+    when no usable physical-layout geometry is available."""
     body: list[str] = []
+
+    # Both sections share the figure machinery; they all come out empty when
+    # there is no usable geometry, in which case the 経路 table is the fallback.
+    figure_table = _html_figure_table(layers_data, behaviors, macros, geom, unit)
+    path_figures = _html_figure_table(layers_data, behaviors, macros, geom, unit,
+                                      mode='path')
 
     if len(layers_data) == 1:
         layer_name, bindings = layers_data[0]
         body.append(f'<h1>{_html_inline(f"{layer_name} レイヤー キー割り当て一覧")}</h1>')
-        body.append('<p>' + _html_inline(
-            f'※ {len(bindings)} 個のバインディング位置を 1 表に集約。'
-            f'実機の物理配列に合わせて「Row N」セクション行 + 操作行を縦に並べる（左右分割は中央の空列で分離）。'
-        ) + '</p>')
-        body.append('<ul>')
-        body.append('<li>' + _html_inline('各 row セクション行に「キーラベル」と「バインディング (`&...`)」の 2 段表示でキー位置を示す。') + '</li>')
-        body.append('<li>' + _html_inline('各表の左端 1 列が「操作」（タップ / ホールド / ダブルタップ / Shift+ / Ctrl+）または「Row N」見出し。') + '</li>')
-        body.append('</ul>')
-        figure_table = _html_figure_table(layers_data, behaviors, macros, geom, unit)
+        if path_figures:
+            body.append('<p>' + _html_inline(
+                f'※ {len(bindings)} 個のバインディング位置を 1 ファイルに集約。'
+                f'キーの動作は実機の物理配列に合わせた「レイアウト図」セクションで確認し、'
+                f'バインディングの解決経路は「経路」セクションで確認する。'
+            ) + '</p>')
+        else:
+            body.append('<p>' + _html_inline(
+                f'※ {len(bindings)} 個のバインディング位置を 1 表に集約。'
+                f'実機の物理配列に合わせて「Row N」セクション行 + 操作行を縦に並べる（左右分割は中央の空列で分離）。'
+            ) + '</p>')
+            body.append('<ul>')
+            for bullet in _TABLE_FALLBACK_BULLETS:
+                body.append('<li>' + _html_inline(bullet) + '</li>')
+            body.append('</ul>')
         if figure_table:
             body.append(f'<h2>{_html_inline("レイアウト図")}</h2>')
-            body.append('<p>' + _html_inline(
-                'キーを実機の物理配列どおりに配置した図を表にまとめる。表の各行が 1 レイヤーで、'
-                '左列がレイヤー名、右のセルがそのレイヤーの図。'
-                '各キーは「ラベル / タップ動作 / (ホールド動作)」を表示し、'
-                '全操作（ダブルタップ / Shift+ / Ctrl+ など）はマウスオーバーのツールチップで確認できる。'
-                'Tap Dance / Mod Morph の割り当てがある場合は、その操作専用の図を同じセル内に追加表示する'
-                '（割り当てのないキーは薄い枠のみ）。'
-            ) + '</p>')
+            body.append('<p>' + _html_inline(_LAYOUT_FIGURE_INTRO) + '</p>')
             body += figure_table
-        # 動作 table is omitted: the layout figure above already shows the
-        # same resolved actions (key caps + tooltips).
-        for mode_label, mode in [('経路', 'path')]:
-            body.append(f'<h2>{_html_inline(mode_label)}</h2>')
-            header, rows = _build_layer_mode_table(bindings, behaviors, macros, mode,
+        # 経路: figure form preferred; table only as the no-geometry fallback.
+        body.append(f'<h2>{_html_inline("経路")}</h2>')
+        if path_figures:
+            body.append('<p>' + _html_inline(_PATH_FIGURE_INTRO) + '</p>')
+            body += path_figures
+        else:
+            header, rows = _build_layer_mode_table(bindings, behaviors, macros, 'path',
                                                    grid, display_cols)
             if header is not None:
                 body += _html_table_lines(header, rows)
@@ -1588,57 +1715,49 @@ def write_html(layers_data: list[tuple[str, list[str]]],
         body.append('<p>' + _html_inline(
             f'※ {len(layers_data)} 個のレイヤーのキー割り当てを 1 ファイルに集約。'
             f'各レイヤーの動作は実機の物理配列に合わせた「レイアウト図」セクションで確認し、'
-            f'バインディングの解決過程は「経路」セクションで確認する。'
+            f'バインディングの解決経路は「経路」セクションで確認する。'
         ) + '</p>')
-        body.append('<ul>')
-        body.append('<li>' + _html_inline('各 row セクション行に「キーラベル」と「バインディング (`&...`)」の 2 段表示でキー位置を示す。') + '</li>')
-        body.append('<li>' + _html_inline('列は物理配列の左→右順。左右分割は中央の空列で分離する。') + '</li>')
-        body.append('<li>' + _html_inline('各表の左端 1 列が「操作」（タップ / ホールド / ダブルタップ / Shift+ / Ctrl+）または「Row N」見出し。') + '</li>')
-        body.append('</ul>')
+        if not path_figures:
+            body.append('<ul>')
+            for bullet in _TABLE_FALLBACK_BULLETS:
+                body.append('<li>' + _html_inline(bullet) + '</li>')
+            body.append('</ul>')
 
         # Visual physical-layout figures, collected into one big table:
         # one row per layer, every figure of that layer in the same cell.
-        if geom is not None:
-            figure_table = _html_figure_table(layers_data, behaviors, macros, geom, unit)
-            if figure_table:
-                body.append(f'<h2>{_html_inline("レイアウト図")}</h2>')
-                body.append('<p>' + _html_inline(
-                    '各レイヤーを実機の物理配列どおりに配置した図を 1 つの表にまとめる。表の各行が 1 レイヤーで、'
-                    '左列がレイヤー名、右のセルがそのレイヤーの図。'
-                    '各キーは「ラベル / タップ動作 / (ホールド動作)」を表示し、'
-                    '全操作（ダブルタップ / Shift+ / Ctrl+ など）はマウスオーバーのツールチップで確認できる。'
-                    'Tap Dance / Mod Morph の割り当てがあるレイヤーには、その操作専用の図を同じセル内に追加表示する'
-                    '（割り当てのないキーは薄い枠のみ）。'
-                ) + '</p>')
-                body += figure_table
+        if figure_table:
+            body.append(f'<h2>{_html_inline("レイアウト図")}</h2>')
+            body.append('<p>' + _html_inline(_LAYOUT_FIGURE_INTRO) + '</p>')
+            body += figure_table
 
-        # Positions that are `&none` in the DEFAULT layer are inactive and
-        # hidden in every layer's table.
-        active_indices = _compute_active_indices(layers_data)
+        # 経路: figure form preferred; table only as the no-geometry fallback.
+        body.append(f'<h2>{_html_inline("経路")}</h2>')
+        if path_figures:
+            body.append('<p>' + _html_inline(_PATH_FIGURE_INTRO) + '</p>')
+            body += path_figures
+        else:
+            # Positions that are `&none` in the DEFAULT layer are inactive and
+            # hidden in every layer's table.
+            active_indices = _compute_active_indices(layers_data)
 
-        # 動作 tables are omitted: the layout figures above already show the
-        # same resolved actions (key caps + tooltips).
-        for mode_label, mode in [('経路', 'path')]:
-            body.append(f'<h2>{_html_inline(mode_label)}</h2>')
             # Merge every layer's rows into a single table so the column widths
             # (which the browser auto-sizes per-table) line up across layers.
             shared_header: list[str] | None = None
             layer_blocks: list[tuple[str, list[dict]]] = []
             for layer_name, bindings in layers_data:
-                header, rows = _build_layer_mode_table(bindings, behaviors, macros, mode,
+                header, rows = _build_layer_mode_table(bindings, behaviors, macros, 'path',
                                                        grid, display_cols,
                                                        active_indices=active_indices)
                 if header is None:
                     continue
                 shared_header = header
                 layer_blocks.append((layer_name, rows))
-            if shared_header is None:
-                continue
-            body += _html_table_open(shared_header)
-            for layer_name, rows in layer_blocks:
-                body.append(_html_layer_row(layer_name, len(shared_header)))
-                body += _html_body_rows(rows)
-            body += _html_table_close()
+            if shared_header is not None:
+                body += _html_table_open(shared_header)
+                for layer_name, rows in layer_blocks:
+                    body.append(_html_layer_row(layer_name, len(shared_header)))
+                    body += _html_body_rows(rows)
+                body += _html_table_close()
 
     html = (
         '<!DOCTYPE html>\n<html lang="ja">\n<head>\n'
