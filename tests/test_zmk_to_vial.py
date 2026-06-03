@@ -44,6 +44,11 @@ def make_keymap(tmp_path: Path, body: str) -> Path:
 def make_config(tmp_path: Path, **overrides) -> dict:
     config = load_config(None)
     config.update(overrides)
+    # mirror load_config's convenience fill (tapping_term_ms -> settings["7"])
+    settings = {str(k): v for k, v in dict(config.get('settings') or {}).items()}
+    if config.get('tapping_term_ms') is not None:
+        settings.setdefault('7', int(config['tapping_term_ms']))
+    config['settings'] = settings
     return config
 
 
@@ -336,6 +341,38 @@ KEYMAP_TEMPLATE = '''
     }};
 }};
 '''
+
+
+class TestTapDanceTerm:
+    TD_KEYMAP = dict(
+        behaviors='''
+            td_a: td_a {
+                compatible = "zmk,behavior-tap-dance";
+                #binding-cells = <0>;
+                bindings = <&kp A>, <&kp B>;
+            };
+        ''',
+        layers='DEFAULT { bindings = <&kp Q &td_a>; };')
+
+    def _td(self, tmp_path, **cfg):
+        keymap = make_keymap(tmp_path, KEYMAP_TEMPLATE.format(
+            macros='', **self.TD_KEYMAP))
+        return Converter(keymap, make_config(tmp_path, **cfg)).convert()
+
+    def test_default_falls_back_to_global_term(self, tmp_path):
+        conv = self._td(tmp_path, tapping_term_ms=150)
+        assert conv.tap_dances[0].tapping_term == 150
+
+    def test_dedicated_term_overrides_global(self, tmp_path):
+        # mod-tap/layer-tap term stays 150; tap dance uses its own 200
+        conv = self._td(tmp_path, tapping_term_ms=150,
+                        tap_dance_tapping_term_ms=200)
+        assert conv.tapping_term == 150
+        assert conv.tap_dances[0].tapping_term == 200
+        # propagated into the .vil entry (5th field) and the .inc
+        vil = emit_vil(conv)
+        assert vil['tap_dance'][0][4] == 200
+        assert '200}' in emit_inc(conv, 'x.keymap')
 
 
 class TestModMorphCases:

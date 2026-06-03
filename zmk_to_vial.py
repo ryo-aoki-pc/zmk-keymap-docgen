@@ -632,7 +632,8 @@ DEFAULT_CONFIG = {
     'vial_uid': None,              # list of 8 bytes, or None
     'layout_options': -1,
     'settings': {},                # QSID(str) -> value
-    'tapping_term_ms': None,       # convenience: fills settings["7"]
+    'tapping_term_ms': None,       # convenience: fills settings["7"] (mod-tap/layer-tap)
+    'tap_dance_tapping_term_ms': None,  # per-tap-dance term; default = global tapping term
     'unmapped_keys': 'passthrough',  # or 'none'
     # Whether the .vil carries the converted key overrides. Their triggers can
     # be carrier custom keycodes (QK_KB_n, shown as USERnn in vial-gui); the
@@ -712,6 +713,10 @@ class Converter:
         self._next_carrier = int(config.get('carrier_start', 3))
 
         self.tapping_term = int(config['settings'].get('7', 200))
+        # Tap dances carry their own term (Vial custom_tapping_term); ZMK's
+        # tap-dance default is 200ms, independent of the mod-tap/layer-tap term.
+        td_term = config.get('tap_dance_tapping_term_ms')
+        self.td_tapping_term = int(td_term) if td_term is not None else self.tapping_term
 
     # ---- helpers ---------------------------------------------------------
 
@@ -1003,7 +1008,7 @@ class Converter:
         for name, td_id in self._td_ids.items():
             beh = self.zmk_behaviors[name]
             bindings = beh.get('bindings') or []
-            td = VialTapDance(index=td_id, zmk_name=name, tapping_term=self.tapping_term)
+            td = VialTapDance(index=td_id, zmk_name=name, tapping_term=self.td_tapping_term)
             # ZMK tap-dance bindings: [1st tap, 2nd tap, ...]
             slots = ['on_tap', 'on_double_tap']
             for i, b in enumerate(bindings):
