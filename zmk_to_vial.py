@@ -441,6 +441,124 @@ def mod_mask_label(mask: int) -> str:
 
 
 # ============================================================================
+# Vial GUI keycode strings (qmk_id)
+#
+# The .vil tap_dance / key_override / combo / macro sections store keycodes
+# *as-is* (vial-gui only deserialises them when sending to the device), and
+# the GUI displays them through code that requires a string qmk_id — passing a
+# raw integer there crashes with "argument of type 'int' is not iterable".
+# So those sections must use qmk_id strings, not integers.  The keyboard
+# reports Vial protocol 6, so vial-gui uses its keycodes_v6 names (the legacy
+# short spellings: KC_BSPACE, KC_LBRACKET, KC_SCOLON, KC_PGUP, KC_LCTRL …).
+# (The layout array can stay integers: restore_layout normalises every cell
+# with Keycode.serialize(Keycode.deserialize(code)).)
+# ============================================================================
+
+def _build_v6_basic_names() -> dict[int, str]:
+    t: dict[int, str] = {0x00: 'KC_NO', 0x01: 'KC_TRNS'}
+    for i, ch in enumerate('ABCDEFGHIJKLMNOPQRSTUVWXYZ'):
+        t[0x04 + i] = f'KC_{ch}'
+    for i, n in enumerate('1234567890'):
+        t[0x1E + i] = f'KC_{n}'
+    t.update({
+        0x28: 'KC_ENTER', 0x29: 'KC_ESCAPE', 0x2A: 'KC_BSPACE', 0x2B: 'KC_TAB',
+        0x2C: 'KC_SPACE', 0x2D: 'KC_MINUS', 0x2E: 'KC_EQUAL', 0x2F: 'KC_LBRACKET',
+        0x30: 'KC_RBRACKET', 0x31: 'KC_BSLASH', 0x32: 'KC_NONUS_HASH',
+        0x33: 'KC_SCOLON', 0x34: 'KC_QUOTE', 0x35: 'KC_GRAVE', 0x36: 'KC_COMMA',
+        0x37: 'KC_DOT', 0x38: 'KC_SLASH', 0x39: 'KC_CAPSLOCK',
+    })
+    for i in range(12):
+        t[0x3A + i] = f'KC_F{i + 1}'
+    t.update({
+        0x46: 'KC_PSCREEN', 0x47: 'KC_SCROLLLOCK', 0x48: 'KC_PAUSE', 0x49: 'KC_INSERT',
+        0x4A: 'KC_HOME', 0x4B: 'KC_PGUP', 0x4C: 'KC_DELETE', 0x4D: 'KC_END',
+        0x4E: 'KC_PGDOWN', 0x4F: 'KC_RIGHT', 0x50: 'KC_LEFT', 0x51: 'KC_DOWN', 0x52: 'KC_UP',
+        0x65: 'KC_APPLICATION',
+        0x87: 'KC_RO', 0x88: 'KC_KANA', 0x89: 'KC_JYEN', 0x8A: 'KC_HENK', 0x8B: 'KC_MHEN',
+        0x90: 'KC_LANG1', 0x91: 'KC_LANG2',
+        0xD1: 'KC_BTN1', 0xD2: 'KC_BTN2', 0xD3: 'KC_BTN3', 0xD4: 'KC_BTN4', 0xD5: 'KC_BTN5',
+        0xE0: 'KC_LCTRL', 0xE1: 'KC_LSHIFT', 0xE2: 'KC_LALT', 0xE3: 'KC_LGUI',
+        0xE4: 'KC_RCTRL', 0xE5: 'KC_RSHIFT', 0xE6: 'KC_RALT', 0xE7: 'KC_RGUI',
+    })
+    return t
+
+
+V6_BASIC_NAMES = _build_v6_basic_names()
+
+# 5-bit MT mod field -> vial mod-tap function name (single modifiers only,
+# which is all ZMK &mt produces)
+MOD5_TO_MT_NAME = {
+    MOD_BIT_LCTL: 'LCTL_T', MOD_BIT_LSFT: 'LSFT_T',
+    MOD_BIT_LALT: 'LALT_T', MOD_BIT_LGUI: 'LGUI_T',
+    MOD_BIT_RIGHT | MOD_BIT_LCTL: 'RCTL_T', MOD_BIT_RIGHT | MOD_BIT_LSFT: 'RSFT_T',
+    MOD_BIT_RIGHT | MOD_BIT_LALT: 'RALT_T', MOD_BIT_RIGHT | MOD_BIT_LGUI: 'RGUI_T',
+}
+
+# 5-bit QK_MODS field -> vial modifier-wrap function name. Single mods plus the
+# standard combos vial-gui defines; anything else falls back to nesting the
+# single-mod functions (which simple_eval still evaluates correctly).
+MOD5_TO_WRAP_NAME = {
+    MOD_BIT_LCTL: 'LCTL', MOD_BIT_LSFT: 'LSFT', MOD_BIT_LALT: 'LALT', MOD_BIT_LGUI: 'LGUI',
+    MOD_BIT_RIGHT | MOD_BIT_LCTL: 'RCTL', MOD_BIT_RIGHT | MOD_BIT_LSFT: 'RSFT',
+    MOD_BIT_RIGHT | MOD_BIT_LALT: 'RALT', MOD_BIT_RIGHT | MOD_BIT_LGUI: 'RGUI',
+    MOD_BIT_LCTL | MOD_BIT_LSFT: 'C_S',                                  # Ctrl+Shift
+    MOD_BIT_LCTL | MOD_BIT_LALT: 'LCA',                                  # Ctrl+Alt
+    MOD_BIT_LCTL | MOD_BIT_LSFT | MOD_BIT_LALT: 'MEH',                   # Ctrl+Shift+Alt
+    MOD_BIT_LCTL | MOD_BIT_LALT | MOD_BIT_LGUI: 'LCAG',                  # Ctrl+Alt+Gui
+    MOD_BIT_LCTL | MOD_BIT_LSFT | MOD_BIT_LALT | MOD_BIT_LGUI: 'HYPR',   # Ctrl+Shift+Alt+Gui
+}
+
+
+def _wrap_nested_mods(mod5: int, inner: str) -> str:
+    """Fallback for uncommon modifier combos: nest the single-mod functions."""
+    right = mod5 & MOD_BIT_RIGHT
+    expr = inner
+    for bit, lname, rname in ((MOD_BIT_LGUI, 'LGUI', 'RGUI'), (MOD_BIT_LALT, 'LALT', 'RALT'),
+                              (MOD_BIT_LSFT, 'LSFT', 'RSFT'), (MOD_BIT_LCTL, 'LCTL', 'RCTL')):
+        if mod5 & bit:
+            expr = f'{rname if right else lname}({expr})'
+    return expr
+
+
+def keycode_to_vial_string(value: int) -> str:
+    """Convert a 16-bit QMK keycode value to the vial-gui v6 qmk_id string used
+    in .vil tap_dance / key_override / combo / macro fields."""
+    if value in V6_BASIC_NAMES:
+        return V6_BASIC_NAMES[value]
+    if value == QK_BOOT:
+        return 'QK_BOOT'
+    if value == QK_RBT:
+        return 'QK_REBOOT'
+    if QK_TO <= value < QK_TO + 0x20:
+        return f'TO({value - QK_TO})'
+    if QK_MOMENTARY <= value < QK_MOMENTARY + 0x20:
+        return f'MO({value - QK_MOMENTARY})'
+    if QK_TOGGLE_LAYER <= value < QK_TOGGLE_LAYER + 0x20:
+        return f'TG({value - QK_TOGGLE_LAYER})'
+    if QK_TAP_DANCE <= value <= QK_TAP_DANCE + 0xFF:
+        return f'TD({value - QK_TAP_DANCE})'
+    if QK_MACRO <= value <= QK_MACRO + 0x7F:
+        return f'M{value - QK_MACRO}'
+    if QK_KB <= value <= QK_KB + 0x3F:
+        # vial-gui assigns customKeycodes the qmk_id USER00, USER01, … in order
+        return f'USER{value - QK_KB:02}'
+    if QK_MOD_TAP <= value < QK_LAYER_TAP:
+        mod5 = (value >> 8) & 0x1F
+        inner = keycode_to_vial_string(value & 0xFF)
+        name = MOD5_TO_MT_NAME.get(mod5)
+        return f'{name}({inner})' if name else f'MT({mod5}, {inner})'
+    if QK_LAYER_TAP <= value < 0x5000:
+        layer = (value >> 8) & 0xF
+        return f'LT{layer}({keycode_to_vial_string(value & 0xFF)})'
+    if 0x0100 <= value <= 0x1FFF:                    # QK_MODS modifier-wrapped key
+        mod5 = (value >> 8) & 0x1F
+        inner = keycode_to_vial_string(value & 0xFF)
+        name = MOD5_TO_WRAP_NAME.get(mod5)
+        return f'{name}({inner})' if name else _wrap_nested_mods(mod5, inner)
+    return hex(value)
+
+
+# ============================================================================
 # Data model
 # ============================================================================
 
@@ -1262,26 +1380,40 @@ def macro_bytes(actions: list) -> bytes:
 # ============================================================================
 
 def emit_vil(conv: Converter) -> dict:
-    """Build the .vil JSON structure (vial-gui "Load saved layout" format)."""
+    """Build the .vil JSON structure (vial-gui "Load saved layout" format).
+
+    Keycodes in tap_dance / key_override / combo / macro are emitted as
+    vial-gui qmk_id *strings* (see keycode_to_vial_string): vial-gui stores
+    these sections verbatim and its UI requires string qmk_ids — a raw int
+    crashes the keycode display. The layout array stays integers because
+    restore_layout normalises each cell via Keycode.serialize(deserialize()).
+    """
     cfg = conv.config
     layer_count = int(cfg.get('layer_count', 8))
+    kc = keycode_to_vial_string
+    NO = 'KC_NO'
+
+    def macro_action_to_vil(act: list) -> list:
+        if act[0] in ('delay', 'text'):
+            return list(act)
+        return [act[0]] + [kc(int(c)) for c in act[1:]]
 
     macro_list = [[] for _ in range(16)]
     for m in conv.macros:
-        macro_list[m.index] = [list(a) for a in m.actions]
+        macro_list[m.index] = [macro_action_to_vil(a) for a in m.actions]
 
-    td_list = [[KC_NO, KC_NO, KC_NO, KC_NO, 200] for _ in range(32)]
+    td_list = [[NO, NO, NO, NO, 200] for _ in range(32)]
     for td in conv.tap_dances:
-        td_list[td.index] = [td.on_tap, td.on_hold, td.on_double_tap,
-                             td.on_tap_hold, td.tapping_term]
+        td_list[td.index] = [kc(td.on_tap), kc(td.on_hold), kc(td.on_double_tap),
+                             kc(td.on_tap_hold), td.tapping_term]
 
-    combo_list = [[KC_NO] * 5 for _ in range(32)]
+    combo_list = [[NO] * 5 for _ in range(32)]
 
     ko_list = []
     for ko in conv.key_overrides:
         ko_list.append({
-            'trigger': ko.trigger,
-            'replacement': ko.replacement,
+            'trigger': kc(ko.trigger),
+            'replacement': kc(ko.replacement),
             'layers': ko.layers if ko.layers else ALL_LAYERS_MASK,
             'trigger_mods': ko.trigger_mods,
             'negative_mod_mask': ko.negative_mod_mask,
@@ -1290,7 +1422,7 @@ def emit_vil(conv: Converter) -> dict:
         })
     while len(ko_list) < 32:
         ko_list.append({
-            'trigger': KC_NO, 'replacement': KC_NO, 'layers': ALL_LAYERS_MASK,
+            'trigger': NO, 'replacement': NO, 'layers': ALL_LAYERS_MASK,
             'trigger_mods': 0, 'negative_mod_mask': 0, 'suppressed_mods': 0,
             'options': 0,
         })

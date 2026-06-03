@@ -124,6 +124,37 @@ class TestKeycodeTables:
         assert keycode_c_expr(0x011B) == 'LCTL(KC_X)'
         assert keycode_c_expr(0x034A) == 'LSFT(LCTL(KC_HOME))'
 
+    def test_keycode_to_vial_string(self):
+        from zmk_to_vial import keycode_to_vial_string as v
+        # basic v6 spellings (differ from the long C names)
+        assert v(KC_NO) == 'KC_NO'
+        assert v(KC_TRNS) == 'KC_TRNS'
+        assert v(0x04) == 'KC_A'
+        assert v(0x2A) == 'KC_BSPACE'          # not KC_BACKSPACE
+        assert v(0x33) == 'KC_SCOLON'          # not KC_SEMICOLON
+        assert v(0x2F) == 'KC_LBRACKET'
+        assert v(0x4B) == 'KC_PGUP'
+        assert v(0x4E) == 'KC_PGDOWN'
+        assert v(0xE0) == 'KC_LCTRL'           # not KC_LEFT_CTRL
+        assert v(0xE1) == 'KC_LSHIFT'
+        # parametric
+        assert v(MO(1)) == 'MO(1)'
+        assert v(TO(4)) == 'TO(4)'
+        assert v(TD(0)) == 'TD(0)'
+        assert v(MACRO_KC(3)) == 'M3'
+        assert v(KB_KC(3)) == 'USER03'         # carrier custom keycode
+        assert v(KB_KC(10)) == 'USER10'
+        assert v(MT(0x01, 0x04)) == 'LCTL_T(KC_A)'
+        assert v(MT(0x02, 0x28)) == 'LSFT_T(KC_ENTER)'
+        assert v(MT(0x11, 0x2D)) == 'RCTL_T(KC_MINUS)'
+        assert v(LT(2, 0x2C)) == 'LT2(KC_SPACE)'
+        # modifier-wrapped
+        assert v(0x011B) == 'LCTL(KC_X)'
+        assert v(0x024D) == 'LSFT(KC_END)'
+        assert v(0x034A) == 'C_S(KC_HOME)'     # ctrl+shift combo
+        assert v(QK_BOOT) == 'QK_BOOT'
+        assert v(QK_RBT) == 'QK_REBOOT'
+
     def test_vial_uid(self):
         uid = vial_uid_to_int([0x05, 0xE4, 0xA1, 0x7F, 0xDC, 0x87, 0xCB, 0x2A])
         assert uid == 0x2ACB87DC7FA1E405
@@ -199,12 +230,36 @@ class TestSampleKeymap:
         assert len(vil['combo']) == 32
         assert len(vil['key_override']) == 32
         assert len(vil['encoder_layout']) == 8
-        # all keycodes are ints (vial-gui deserialize accepts them as-is)
+        # layout cells stay ints (restore_layout normalises via serialize(deserialize))
         for layer in vil['layout']:
             for row in layer:
-                for kc in row:
-                    assert isinstance(kc, int)
+                for code in row:
+                    assert isinstance(code, int)
         json.dumps(vil)                                      # must be serialisable
+
+    def test_vil_keycode_sections_are_strings(self, sample_conv):
+        """tap_dance / key_override / combo / macro keycodes must be qmk_id
+        strings — vial-gui stores them verbatim and crashes on raw ints."""
+        vil = emit_vil(sample_conv)
+        # tap dance: keycode fields strings, tapping term int (no real TDs here,
+        # so check the KC_NO fillers)
+        for entry in vil['tap_dance']:
+            assert entry[0:4] == ['KC_NO', 'KC_NO', 'KC_NO', 'KC_NO']
+            assert isinstance(entry[4], int)
+        # combo: all five fields are keycode strings
+        for entry in vil['combo']:
+            assert entry == ['KC_NO'] * 5
+        # key override: trigger/replacement strings, masks ints
+        ko = vil['key_override'][0]                          # mm_comma
+        assert ko['trigger'] == 'KC_COMMA'
+        assert ko['replacement'] == 'KC_SCOLON'              # v6 spelling
+        assert isinstance(ko['trigger_mods'], int)
+        for ko in vil['key_override']:
+            assert isinstance(ko['trigger'], str)
+            assert isinstance(ko['replacement'], str)
+        # macro: action keycodes are strings, delays ints
+        macro = vil['macro'][0]                              # macro_hi: H, I
+        assert macro == [['tap', 'KC_H', 'KC_I']]
 
     def test_inc_compiles_shape(self, sample_conv):
         inc = emit_inc(sample_conv, 'sample.keymap')
