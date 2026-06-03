@@ -1672,7 +1672,7 @@ _TABLE_FALLBACK_BULLETS = (
 def write_html(layers_data: list[tuple[str, list[str]]],
                behaviors: dict, macros: dict, output_path: Path,
                grid, display_cols, geom=None, unit=None,
-               *, resolver=resolve, title=None) -> None:
+               *, resolver=resolve, title=None, show_path=True) -> None:
     """Generate one standalone HTML file.
     Single layer  => H1 layer title, then H2 レイアウト図 / H2 経路.
     Multi layers  => H1 top title, H2 レイアウト図 (one row per layer), then H2 経路.
@@ -1713,22 +1713,26 @@ def write_html(layers_data: list[tuple[str, list[str]]],
             body.append('<p>' + _html_inline(_LAYOUT_FIGURE_INTRO) + '</p>')
             body += figure_table
         # 経路: figure form preferred; table only as the no-geometry fallback.
-        body.append(f'<h2>{_html_inline("経路")}</h2>')
-        if path_figures:
-            body.append('<p>' + _html_inline(_PATH_FIGURE_INTRO) + '</p>')
-            body += path_figures
-        else:
-            header, rows = _build_layer_mode_table(bindings, behaviors, macros, 'path',
-                                                   grid, display_cols)
-            if header is not None:
-                body += _html_table_lines(header, rows)
+        if show_path:
+            body.append(f'<h2>{_html_inline("経路")}</h2>')
+            if path_figures:
+                body.append('<p>' + _html_inline(_PATH_FIGURE_INTRO) + '</p>')
+                body += path_figures
+            else:
+                header, rows = _build_layer_mode_table(bindings, behaviors, macros, 'path',
+                                                       grid, display_cols)
+                if header is not None:
+                    body += _html_table_lines(header, rows)
     else:
         body.append(f'<h1>{_html_inline(title or "キー割り当て一覧")}</h1>')
-        body.append('<p>' + _html_inline(
-            f'※ {len(layers_data)} 個のレイヤーのキー割り当てを 1 ファイルに集約。'
-            f'各レイヤーの動作は実機の物理配列に合わせた「レイアウト図」セクションで確認し、'
-            f'バインディングの解決経路は「経路」セクションで確認する。'
-        ) + '</p>')
+        if show_path:
+            intro = (f'※ {len(layers_data)} 個のレイヤーのキー割り当てを 1 ファイルに集約。'
+                     f'各レイヤーの動作は実機の物理配列に合わせた「レイアウト図」セクションで確認し、'
+                     f'バインディングの解決経路は「経路」セクションで確認する。')
+        else:
+            intro = (f'※ {len(layers_data)} 個のレイヤーのキー割り当てを 1 ファイルに集約。'
+                     f'各レイヤーの動作は実機の物理配列に合わせた「レイアウト図」セクションで確認する。')
+        body.append('<p>' + _html_inline(intro) + '</p>')
         if not path_figures:
             body.append('<ul>')
             for bullet in _TABLE_FALLBACK_BULLETS:
@@ -1743,11 +1747,12 @@ def write_html(layers_data: list[tuple[str, list[str]]],
             body += figure_table
 
         # 経路: figure form preferred; table only as the no-geometry fallback.
-        body.append(f'<h2>{_html_inline("経路")}</h2>')
-        if path_figures:
+        if show_path and path_figures:
+            body.append(f'<h2>{_html_inline("経路")}</h2>')
             body.append('<p>' + _html_inline(_PATH_FIGURE_INTRO) + '</p>')
             body += path_figures
-        else:
+        elif show_path:
+            body.append(f'<h2>{_html_inline("経路")}</h2>')
             # Positions that are `&none` in the DEFAULT layer are inactive and
             # hidden in every layer's table.
             active_indices = _compute_active_indices(layers_data)

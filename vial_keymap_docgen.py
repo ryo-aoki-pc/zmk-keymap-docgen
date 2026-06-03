@@ -288,6 +288,56 @@ def _norm_token(tok: str) -> str:
     return tok
 
 
+def detect_layout_macro_name(text: str) -> str | None:
+    """The LAYOUT macro name used by the keymap (`[0] = LAYOUT_xxx(...)`)."""
+    m = re.search(r'\[\d+\]\s*=\s*([A-Za-z_]\w*)\s*\(', kd.strip_comments(text))
+    return m.group(1) if m else None
+
+
+def _extract_brace_body(text: str, open_idx: int) -> str:
+    """Return the content between a '{' at open_idx and its matching '}'."""
+    depth = 0
+    for i in range(open_idx, len(text)):
+        if text[i] == '{':
+            depth += 1
+        elif text[i] == '}':
+            depth -= 1
+            if depth == 0:
+                return text[open_idx + 1:i]
+    raise ValueError('unbalanced braces in LAYOUT macro body')
+
+
+def parse_layout_macro(h_text: str, macro_name: str) -> dict[int, tuple[int, int]]:
+    """Parse a QMK `#define LAYOUT_xxx(args) { {cells}, ... }` macro into
+    {arg_index: (matrix_row, matrix_col)} by matching each argument name to its
+    cell position in the matrix body. Follows simple aliases
+    (`#define LAYOUT_a LAYOUT_b`)."""
+    text = kd.strip_comments(h_text)
+    text = re.sub(r'\\[ \t]*\r?\n', ' ', text)  # join `\`-continued #define lines
+    name = macro_name
+    for _ in range(8):  # follow `#define ALIAS CONCRETE`
+        m = re.search(r'#\s*define\s+' + re.escape(name) + r'\s+([A-Za-z_]\w*)\s*$',
+                      text, re.M)
+        if not m:
+            break
+        name = m.group(1)
+    m = re.search(r'#\s*define\s+' + re.escape(name) + r'\s*\(', text)
+    if not m:
+        raise ValueError(f'LAYOUT macro {macro_name!r} not found in the .h file')
+    args_body, after = _extract_paren_body(text, m.end() - 1)
+    args = [a.strip() for a in split_top_level(args_body) if a.strip()]
+    arg_index = {a: i for i, a in enumerate(args)}
+    body = _extract_brace_body(text, text.index('{', after))
+    arg_to_matrix: dict[int, tuple[int, int]] = {}
+    for r, rowm in enumerate(re.finditer(r'\{([^{}]*)\}', body)):
+        for c, cell in enumerate(s.strip() for s in split_top_level(rowm.group(1))):
+            if cell in arg_index:
+                arg_to_matrix[arg_index[cell]] = (r, c)
+    if not arg_to_matrix:
+        raise ValueError(f'LAYOUT macro {name!r} had no mappable argument cells')
+    return arg_to_matrix
+
+
 # ============================================================================
 # Vial .vil keymap  (Target B)
 # ============================================================================
@@ -344,19 +394,28 @@ def adapt_qmk_info_layout(info: dict, layout_name: str | None = None):
         if e.get('label') is not None:
             ent['label'] = e['label']
         out_entries.append(ent)
-    return kd.parse_physical_layout({'layouts': {'default_layout': {'layout': out_entries}}})
+    # QMK info.json x/y are already in key units; pin unit so fractional
+    # column-stagger offsets aren't mistaken for the key unit.
+    return kd.parse_physical_layout(
+        {'layouts': {'default_layout': {'layout': out_entries}}, 'unit': 1.0})
 
 
 def parse_kle(keymap_rows: list, choice: int):
-    """Walk a VIA/Vial KLE `layouts.keymap` (no rotation in the targets here:
-    x/y/w/h offsets only). Keep keys whose layout-option tag is absent or equals
-    `0,<choice>`. Returns a list of {'x','y','w','h','matrix':(row,col)} dicts."""
+    """Walk a VIA/Vial KLE `layouts.keymap` (the kle-serial cursor model:
+    x/y/w/h offsets and r/rx/ry rotation). Keep keys whose layout-option tag is
+    absent or equals `0,<choice>`. Returns a list of
+    {'x','y','w','h','r','rx','ry','matrix':(row,col)} dicts."""
     keys = []
-    cur = {'x': 0.0, 'y': 0.0, 'w': 1.0, 'h': 1.0}
+    cur = {'x': 0.0, 'y': 0.0, 'w': 1.0, 'h': 1.0, 'r': 0.0, 'rx': 0.0, 'ry': 0.0}
     for row in keymap_rows:
-        cur['x'] = 0.0
         for item in row:
             if isinstance(item, dict):
+                if 'r' in item:
+                    cur['r'] = float(item['r'])
+                if 'rx' in item:
+                    cur['rx'] = float(item['rx']); cur['x'] = cur['rx']; cur['y'] = cur['ry']
+                if 'ry' in item:
+                    cur['ry'] = float(item['ry']); cur['x'] = cur['rx']; cur['y'] = cur['ry']
                 if 'x' in item:
                     cur['x'] += float(item['x'])
                 if 'y' in item:
@@ -376,28 +435,41 @@ def parse_kle(keymap_rows: list, choice: int):
                 if t:
                     keep = int(t.group(2)) == choice
             if mm and keep:
-                keys.append({'x': cur['x'], 'y': cur['y'],
-                             'w': cur['w'], 'h': cur['h'],
+                keys.append({'x': cur['x'], 'y': cur['y'], 'w': cur['w'], 'h': cur['h'],
+                             'r': cur['r'], 'rx': cur['rx'], 'ry': cur['ry'],
                              'matrix': (int(mm.group(1)), int(mm.group(2)))})
             cur['x'] += cur['w']
             cur['w'] = 1.0
             cur['h'] = 1.0
         cur['y'] += 1.0
+        cur['x'] = cur['rx']
     return keys
 
 
 def adapt_vial_kle_layout(vial: dict, choice: int):
     """Vial vial.json / VIA via.json `layouts.keymap` -> (layout 5-tuple,
     matrix list) where matrix[i] is the (row,col) of figure key i (to index a
-    .vil layout)."""
+    keymap source). Coordinates are normalised so the figure starts at the
+    origin, and unit is pinned to 1.0 (KLE keys are 1u; fractional offsets must
+    not be mistaken for the key unit)."""
     keymap_rows = (vial.get('layouts') or {}).get('keymap')
     if not keymap_rows:
         raise ValueError('vial.json has no "layouts.keymap"')
     keys = parse_kle(keymap_rows, choice)
     if not keys:
         raise ValueError(f'no keys for layout variant {choice} in vial.json')
-    entries = [{'x': k['x'], 'y': k['y'], 'w': k['w'], 'h': k['h']} for k in keys]
-    five = kd.parse_physical_layout({'layouts': {'default_layout': {'layout': entries}}})
+    min_x = min(k['x'] for k in keys)
+    min_y = min(k['y'] for k in keys)
+    entries = []
+    for k in keys:
+        e = {'x': k['x'] - min_x, 'y': k['y'] - min_y, 'w': k['w'], 'h': k['h']}
+        if k['r']:
+            e['r'] = k['r']
+            e['rx'] = k['rx'] - min_x
+            e['ry'] = k['ry'] - min_y
+        entries.append(e)
+    five = kd.parse_physical_layout(
+        {'layouts': {'default_layout': {'layout': entries}}, 'unit': 1.0})
     matrix = [k['matrix'] for k in keys]
     return five, matrix
 
@@ -463,6 +535,17 @@ def main(argv=None) -> int:
                    help='KLE layout option for Vial/VIA layouts '
                         '(default: the .vil layout_options, else 0).')
     p.add_argument('--layout-name', help='Which info.json layouts.<name> to use.')
+    p.add_argument('--layout-macro',
+                   help='QMK .h file with the LAYOUT macro, required to map a '
+                        'keymap.c onto a matrix-indexed (KLE) vial.json/via.json '
+                        'layout (e.g. the real staggered/trackball layout).')
+    p.add_argument('--layout-macro-name',
+                   help='LAYOUT macro name in --layout-macro (default: the macro '
+                        'used by the keymap.c).')
+    p.add_argument('--with-path', action='store_true',
+                   help='Also emit the 経路 (resolution-path) section. Off by '
+                        'default for QMK/Vial output (the raw keycode is in the '
+                        'tooltip) to keep the page compact.')
     p.add_argument('--title', help='HTML page title / heading.')
     args = p.parse_args(argv)
 
@@ -481,12 +564,32 @@ def main(argv=None) -> int:
     if fmt == 'keymap_c':
         # keymap.c may carry Shift-JIS comments (non-UTF-8); they are stripped
         # before parsing, so decode tolerantly rather than failing.
-        layers_data = parse_qmk_keymap_c(
-            in_path.read_text(encoding='utf-8', errors='replace'))
+        text = in_path.read_text(encoding='utf-8', errors='replace')
+        layers_tokens = parse_qmk_keymap_c(text)
         five, matrix = choose_layout(layout_json, args.layout_variant or 0, False)
-        if matrix is not None:
-            print('warning: keymap.c with a matrix-indexed (KLE) layout is not '
-                  'supported; use an ordered info.json layout.', file=sys.stderr)
+        if matrix is None:
+            # Ordered layout (QMK info.json): keymap.c LAYOUT args pair 1:1.
+            layers_data = layers_tokens
+        else:
+            # Matrix-indexed layout (KLE vial.json/via.json): map each LAYOUT arg
+            # to its (row,col) via the LAYOUT macro, then place it where the
+            # vial.json puts that matrix cell (real staggered/trackball layout).
+            if not args.layout_macro:
+                print('error: a matrix-indexed (KLE) layout with a keymap.c needs '
+                      '--layout-macro <keyboard>.h to map LAYOUT args to the '
+                      'matrix.', file=sys.stderr)
+                return 1
+            macro_name = args.layout_macro_name or detect_layout_macro_name(text)
+            arg_to_matrix = parse_layout_macro(
+                Path(args.layout_macro).read_text(encoding='utf-8', errors='replace'),
+                macro_name)
+            layers_data = []
+            for name, toks in layers_tokens:
+                cell = {arg_to_matrix[i]: t for i, t in enumerate(toks)
+                        if i in arg_to_matrix}
+                layers_data.append((name, [cell.get(rc, '&none') for rc in matrix]))
+            print(f'keymap.c: {len(layers_tokens)} layers on {len(matrix)} matrix '
+                  f'keys (variant {args.layout_variant or 0})')
     else:
         vil = _load_json(in_path)
         vil_layout = vil['layout']
@@ -531,7 +634,8 @@ def main(argv=None) -> int:
 
     out_path = Path(args.output)
     kd.write_html(layers_data, {}, {}, out_path, grid, display_cols, geom, unit,
-                  resolver=qmk_resolver, title=args.title or out_path.stem)
+                  resolver=qmk_resolver, title=args.title or out_path.stem,
+                  show_path=args.with_path)
     print(f'saved: {out_path}')
     return 0
 

@@ -151,6 +151,35 @@ def test_adapt_vial_kle_layout_variant_and_matrix():
     assert matrix1 == [(0, 1), (1, 1)]
 
 
+def test_parse_layout_macro_follows_alias_and_continuations():
+    h = (
+        '#define LAYOUT_universal LAYOUT_no_ball\n'
+        '#define LAYOUT_no_ball( \\\n'
+        '    L00, L01,        R01, R00, \\\n'
+        '    L10, L11,        R11, R10  \\\n'
+        '    ) { \\\n'
+        '      { L00, L01, KC_NO }, \\\n'
+        '      { L10, L11, KC_NO }, \\\n'
+        '      { R00, R01, KC_NO }, \\\n'
+        '      { R10, R11, KC_NO }, \\\n'
+        '    }\n'
+    )
+    m = v.parse_layout_macro(h, 'LAYOUT_universal')   # alias -> LAYOUT_no_ball
+    assert len(m) == 8
+    assert m[0] == (0, 0)   # L00
+    assert m[1] == (0, 1)   # L01
+    assert m[2] == (2, 1)   # R01 (arg index 2) -> row 2, col 1
+    assert m[3] == (2, 0)   # R00
+
+
+def test_parse_kle_rotation():
+    keymap = [[{'r': 15, 'rx': 5, 'ry': 2}, '3,4', '3,5']]
+    keys = v.parse_kle(keymap, 0)
+    assert [k['matrix'] for k in keys] == [(3, 4), (3, 5)]
+    assert keys[0]['r'] == 15 and keys[0]['rx'] == 5 and keys[0]['ry'] == 2
+    assert keys[0]['x'] == 5 and keys[0]['y'] == 2      # cursor reset to (rx,ry)
+
+
 def test_build_vil_layer_bindings_indexes_matrix():
     # 1 layer, 2x2 matrix; figure order = [(0,0),(1,1)]
     vil_layout = [[[0x04, 0x00], [0x00, zv.KC_NO]]]   # (0,0)=KC_A, (1,1)=KC_NO
