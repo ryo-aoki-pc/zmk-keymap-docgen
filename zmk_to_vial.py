@@ -59,6 +59,7 @@ Mod-morph -> Key Override rules
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 import sys
@@ -1468,12 +1469,22 @@ def emit_inc(conv: Converter, source_name: str) -> str:
     w(f' * Source ZMK keymap : {source_name}')
     w(' *')
     w(' * EEPROM defaults reproducing the ZMK keymap on the Keyboard Quantizer')
-    w(' * Mini.  Applied from eeconfig_init_user() when the EEPROM is')
-    w(' * (re)initialised, after dynamic_keymap_reset() has seeded the identity')
-    w(' * pass-through keymap; only the cells that differ are overwritten here.')
+    w(' * Mini, applied on top of the identity pass-through keymap (only the')
+    w(' * cells that differ are overwritten).')
     w(' *')
-    w(' * Include this file at the end of keymaps/vial/keymap.c:')
-    w(' *     #include "zmk_keymap_defaults.inc"')
+    w(' * Integration in keymaps/vial/keymap.c:')
+    w(' *   1. Near the top, forward-declare the auto-apply entry point:')
+    w(' *        void zmk_keymap_apply_if_outdated(void);')
+    w(' *   2. At the END of keyboard_post_init_user(), call it:')
+    w(' *        zmk_keymap_apply_if_outdated();')
+    w(' *   3. At the end of the file, include this generated file:')
+    w(' *        #include "zmk_keymap_defaults.inc"')
+    w(' *')
+    w(' * zmk_keymap_apply_if_outdated() applies the bundled keymap once after')
+    w(' * flashing a firmware whose keymap differs from what is stored in EEPROM')
+    w(' * (so flashing alone applies it — no manual EEPROM reset or .vil load')
+    w(' * needed), while preserving the user\'s later Vial edits across reboots of')
+    w(' * the same firmware. eeconfig_init_user() covers the EEPROM-reset path.')
     w(' */')
     w('')
     w('#include "dynamic_keymap.h"')
@@ -1557,14 +1568,30 @@ def emit_inc(conv: Converter, source_name: str) -> str:
     w('};')
     w('')
 
-    # --- application function ---
-    w('void eeconfig_init_user(void) {')
-    w('    /* Overriding eeconfig_init_user() suppresses QMK\'s weak default, so')
-    w('     * reproduce it: reset the user EEPROM area to blank. */')
-    w('#if (EECONFIG_USER_DATA_SIZE) == 0')
-    w('    eeconfig_update_user(0);')
-    w('#endif')
+    # --- keymap version (content hash, so reflashing a changed keymap re-applies) ---
+    settings = cfg.get('settings') or {}
+    blob = repr((
+        keymap_entries,
+        [(td.index, td.on_tap, td.on_hold, td.on_double_tap, td.on_tap_hold,
+          td.tapping_term) for td in conv.tap_dances],
+        [(ko.trigger, ko.replacement, ko.layers, ko.trigger_mods,
+          ko.negative_mod_mask, ko.suppressed_mods, ko.options)
+         for ko in conv.key_overrides],
+        bytes(buf),
+        sorted((int(k), int(v)) for k, v in settings.items()),
+    )).encode('utf-8')
+    version = int.from_bytes(hashlib.sha256(blob).digest()[:2], 'big')
+
+    w(f'/* Content hash of the bundled keymap. Stored in the high 16 bits of the')
+    w(f' * user EEPROM word so that flashing a firmware with a *changed* keymap')
+    w(f' * re-applies it on the next boot (see zmk_keymap_apply_if_outdated). */')
+    w(f'#define ZMK_KEYMAP_VERSION 0x{version:04X}u')
+    w('#define ZMK_KEYMAP_VERSION_SHIFT 16')
+    w('#define ZMK_KEYMAP_VERSION_MASK 0xFFFFu')
     w('')
+
+    # --- apply function (writes all defaults to EEPROM) ---
+    w('static void zmk_apply_keymap_defaults(void) {')
     if keymap_entries:
         w('    /* Keymap cells that differ from the pass-through default */')
         w('    for (size_t i = 0; i < ARRAY_SIZE(zmk_keymap_entries); i++) {')
@@ -1590,7 +1617,6 @@ def emit_inc(conv: Converter, source_name: str) -> str:
     w('    dynamic_keymap_macro_set_buffer(0, sizeof(zmk_macro_buffer),')
     w('                                    (uint8_t *)zmk_macro_buffer);')
     w('')
-    settings = cfg.get('settings') or {}
     if settings:
         w('#ifdef QMK_SETTINGS')
         w('    /* QMK settings (tapping term etc.) */')
@@ -1608,6 +1634,32 @@ def emit_inc(conv: Converter, source_name: str) -> str:
         w('')
     w('    /* Reload Vial runtime state from the EEPROM we just wrote */')
     w('    vial_init();')
+    w('}')
+    w('')
+
+    # --- eeconfig_init_user: runs on EEPROM reset ---
+    w('void eeconfig_init_user(void) {')
+    w('    /* Runs when the EEPROM is (re)initialised. Apply the bundled keymap')
+    w('     * and stamp its version (the low bits stay 0 = the keyboard\'s own')
+    w('     * user_config default, matching QMK\'s weak eeconfig_init_user). */')
+    w('    zmk_apply_keymap_defaults();')
+    w('    eeconfig_update_user((uint32_t)ZMK_KEYMAP_VERSION << ZMK_KEYMAP_VERSION_SHIFT);')
+    w('}')
+    w('')
+
+    # --- version-checked auto-apply (call from keyboard_post_init_user) ---
+    w('/* Call once from keyboard_post_init_user(). Applies the bundled keymap')
+    w(' * the first time a firmware with this keymap version boots (so flashing')
+    w(' * applies it without a manual EEPROM reset), and preserves the user\'s')
+    w(' * later Vial edits on subsequent boots of the same version. */')
+    w('void zmk_keymap_apply_if_outdated(void) {')
+    w('    uint32_t raw = eeconfig_read_user();')
+    w('    if (((raw >> ZMK_KEYMAP_VERSION_SHIFT) & ZMK_KEYMAP_VERSION_MASK) != ZMK_KEYMAP_VERSION) {')
+    w('        zmk_apply_keymap_defaults();')
+    w('        raw = (raw & ~((uint32_t)ZMK_KEYMAP_VERSION_MASK << ZMK_KEYMAP_VERSION_SHIFT))')
+    w('              | ((uint32_t)ZMK_KEYMAP_VERSION << ZMK_KEYMAP_VERSION_SHIFT);')
+    w('        eeconfig_update_user(raw);')
+    w('    }')
     w('}')
     w('')
     return '\n'.join(lines)
@@ -1745,10 +1797,14 @@ def emit_report(conv: Converter, source_name: str) -> str:
     w('### 方法A: ファームウェア組込 (推奨・確実)')
     w('')
     w('生成された `.inc` を vial-qmk の')
-    w('`keyboards/sekigon/keyboard_quantizer/mini/keymaps/vial/` に配置し、keymap.c の末尾で')
-    w('`#include` してビルド・書き込みます。EEPROM (再)初期化時に、レイヤー・マクロ・')
-    w('タップダンス・**キーオーバーライド**を含む全設定が EEPROM に直接書き込まれます。')
-    w('vial-gui の取り込み経路を通らないため、GUI のバージョン差異の影響を受けません。')
+    w('`keyboards/sekigon/keyboard_quantizer/mini/keymaps/vial/` に配置し、keymap.c に組み込みます')
+    w('(`.inc` 冒頭のコメント参照: ① `void zmk_keymap_apply_if_outdated(void);` を前方宣言、')
+    w('② `keyboard_post_init_user()` の末尾で呼び出し、③ ファイル末尾で `#include`)。')
+    w('')
+    w('**ビルドして書き込むだけで**、レイヤー・マクロ・タップダンス・**キーオーバーライド**を')
+    w('含む全設定が次回起動時に EEPROM へ自動適用されます (キーマップ内容のハッシュを保存し、')
+    w('変更を検出したときだけ適用するため、その後の Vial 編集は保持されます)。')
+    w('vial-gui の取り込み経路を通らないため、GUI のバージョン差異の影響も受けません。')
     w('')
     w('### 方法B: Vial GUI で .vil を読み込む')
     w('')

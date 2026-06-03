@@ -1,6 +1,7 @@
 """Tests for zmk_to_vial.py (ZMK keymap -> Vial keymap converter)."""
 
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -273,8 +274,12 @@ class TestSampleKeymap:
     def test_inc_compiles_shape(self, sample_conv):
         inc = emit_inc(sample_conv, 'sample.keymap')
         assert 'void eeconfig_init_user(void)' in inc
-        # must reproduce QMK's weak default (zero the user EEPROM area)
-        assert 'eeconfig_update_user(0);' in inc
+        assert 'static void zmk_apply_keymap_defaults(void)' in inc
+        # version-checked auto-apply entry point + a concrete version constant
+        assert 'void zmk_keymap_apply_if_outdated(void)' in inc
+        assert re.search(r'#define ZMK_KEYMAP_VERSION 0x[0-9A-F]{4}u', inc)
+        assert 'eeconfig_read_user()' in inc
+        assert 'eeconfig_update_user(' in inc
         assert 'dynamic_keymap_set_keycode' in inc
         assert 'dynamic_keymap_set_key_override' in inc
         assert 'dynamic_keymap_macro_set_buffer' in inc
@@ -283,6 +288,25 @@ class TestSampleKeymap:
         assert 'LT(1, KC_SPACE)' in inc
         # no empty C array initialisers (invalid C)
         assert '= {\n};' not in inc
+
+    def test_inc_version_changes_with_keymap(self, tmp_path):
+        """The keymap version hash must change when the converted keymap changes
+        (so reflashing a modified keymap re-applies it) and be stable otherwise."""
+        def version_of(conv):
+            return re.search(r'ZMK_KEYMAP_VERSION (0x[0-9A-F]{4})u',
+                             emit_inc(conv, 'x.keymap')).group(1)
+
+        config = load_config(EXAMPLE / 'sample.vialmap.json')
+        v1 = version_of(Converter(EXAMPLE / 'sample.keymap', config).convert())
+        # same input -> same version (deterministic across runs)
+        v1b = version_of(Converter(EXAMPLE / 'sample.keymap', config).convert())
+        assert v1 == v1b
+        # a changed keymap -> different version
+        km = make_keymap(tmp_path, KEYMAP_TEMPLATE.format(
+            macros='', behaviors='',
+            layers='DEFAULT { bindings = <&kp Q &kp Z>; };'))
+        v2 = version_of(Converter(km, make_config(tmp_path)).convert())
+        assert v2 != v1
 
     def test_report_contains_sections(self, sample_conv):
         report = emit_report(sample_conv, 'sample.keymap')
