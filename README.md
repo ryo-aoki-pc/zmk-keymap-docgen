@@ -253,6 +253,43 @@ python zmk_to_vial.py config/MyBoard.keymap -m tools/MyBoard.vialmap.json \
 pip install pytest && python -m pytest tests/ -v
 ```
 
+## Vial / QMK keymaps (`vial_keymap_docgen.py`)
+
+The same physical-layout HTML can be generated for a **QMK/Vial** keymap, so a
+Vial keyboard gets a `KEYMAP.html` that looks just like ZMK's. It reuses
+`keymap_docgen.py`'s figure renderer through a pluggable resolver, driven by a
+QMK keycode resolver instead of the ZMK one.
+
+Two input modes (auto-detected from the extension, override with `--format`):
+
+```sh
+# QMK keymap.c (LAYOUT_xxx(...) form) on a QMK info.json physical layout
+python vial_keymap_docgen.py path/to/keymaps/<map>/keymap.c \
+    --layout path/to/info.json \
+    --custom-keycodes example/keyball_custom_keycodes.json \
+    -o KEYMAP.html
+
+# Vial .vil (integer layout[layer][row][col]) on a Vial vial.json (KLE) layout
+python vial_keymap_docgen.py path/to/KEYMAP.vil --format vil \
+    --layout path/to/keymaps/vial/vial.json \
+    -o KEYMAP.html
+```
+
+* **Keycodes** — basic `KC_*` (short and long spellings), `MT`/`xxx_T` (tap on
+  the cap, mod below), `LT`/`MO`/`TO`/`TG`/`DF`/`OSL`/`LM`, `TD(n)`, macros
+  (`QK_MACRO_n`), mod-wrappers (`S()/C()/A()/G()/C_S()` …), `QK_BOOT`, and
+  custom keycodes by name. `--custom-keycodes` supplies friendly labels for
+  firmware-specific enums (e.g. Keyball's `AML_TO`, `CPI_I100`); a Vial
+  `vial.json`'s `customKeycodes` is used automatically for `QK_KB_n` carriers.
+* **Layouts** — QMK `info.json`/`keyboard.json` (ordered, pairs 1:1 with the
+  `keymap.c` `LAYOUT` arguments) or Vial `vial.json` / VIA `via.json` (KLE,
+  matrix-indexed; pick the layout option with `--layout-variant`, default the
+  `.vil`'s `layout_options`). A `keymap_docgen` physical-layout JSON also works.
+
+The ZMK path is unchanged — the new resolver/title parameters on
+`keymap_docgen.write_html` default to the existing behaviour (covered by a
+regression test).
+
 ## License
 
 MIT — see [LICENSE](LICENSE).

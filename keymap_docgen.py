@@ -642,6 +642,15 @@ def load_physical_layout(path: Path):
         data = json.loads(Path(path).read_text(encoding='utf-8'))
     except (OSError, ValueError):
         return None, {}, None, None, None
+    return parse_physical_layout(data)
+
+
+def parse_physical_layout(data):
+    """Parse an already-loaded physical-layout dict (the same shape
+    load_physical_layout reads from disk) into its (coords, labels, geom, unit,
+    rowcol) tuple. Split out so other front-ends (e.g. the QMK/Vial layout
+    adapters in vial_keymap_docgen.py) can build the dict in memory and reuse the
+    identical geometry / rowcol handling."""
     layouts = data.get('layouts') if isinstance(data, dict) else None
     if not layouts:
         return None, {}, None, None, None
@@ -1445,7 +1454,8 @@ def _figure_span(css_class: str, text: str, box_scale: float = 1.0) -> str:
 
 def _visual_key_html(idx: int, binding: str, g: dict, scale: float, unit: float,
                      behaviors: dict, macros: dict, op: str = 'タップ',
-                     mode: str = 'action', box_scale: float = 1.0) -> str:
+                     mode: str = 'action', box_scale: float = 1.0,
+                     *, resolver=resolve) -> str:
     """Render one absolutely-positioned key box for a visual figure.
 
     `op` selects which operation the key face shows. The default 'タップ' face
@@ -1467,7 +1477,7 @@ def _visual_key_html(idx: int, binding: str, g: dict, scale: float, unit: float,
                   f';transform-origin:{_fmt_px(ox)}px {_fmt_px(oy)}px')
 
     # Resolve every op once; each value is the (action, path) tuple.
-    resolved = {o: resolve(binding, behaviors, macros, o) for o in OPS}
+    resolved = {o: resolver(binding, behaviors, macros, o) for o in OPS}
     sel = 0 if mode == 'action' else 1
     faces = {o: _normalize_cell(resolved[o][sel]) for o in OPS}
     actions = {o: _normalize_cell(resolved[o][0]) for o in OPS}
@@ -1532,7 +1542,7 @@ def _visual_key_html(idx: int, binding: str, g: dict, scale: float, unit: float,
 def _html_visual_layer(bindings: list[str], behaviors: dict, macros: dict,
                        geom: list[dict], unit: float | None = None,
                        op: str = 'タップ', mode: str = 'action',
-                       key_px: float = KEY_PX) -> list[str]:
+                       key_px: float = KEY_PX, *, resolver=resolve) -> list[str]:
     """Render a layer as a visual keyboard figure (keys placed by real x/y/w/h).
     `unit` (the layout's coordinate amount per 1u) is honored when given so
     fractional column-stagger offsets render at a sensible scale; otherwise it
@@ -1551,7 +1561,7 @@ def _html_visual_layer(bindings: list[str], behaviors: dict, macros: dict,
     out = [f'<div class="{kb_cls}" style="width:{_fmt_px(width)}px;height:{_fmt_px(height)}px">']
     for idx, (binding, g) in enumerate(zip(bindings, geom)):
         out.append(_visual_key_html(idx, binding, g, scale, unit, behaviors, macros,
-                                    op, mode, box_scale))
+                                    op, mode, box_scale, resolver=resolver))
     out.append('</div>')
     return out
 
@@ -1566,14 +1576,14 @@ EXTRA_OP_HEADING = {
 
 
 def _layer_extra_ops(bindings: list[str], behaviors: dict, macros: dict,
-                     mode: str = 'action') -> list[str]:
+                     mode: str = 'action', *, resolver=resolve) -> list[str]:
     """Ops (ダブルタップ / Shift+ / Ctrl+) for which this layer has at least one
     key with a distinct assignment — each one gets an extra figure. Distinctness
     follows the figure mode (action value vs resolution path, see _op_distinct)."""
     out = []
     for op in EXTRA_OP_HEADING:
         for b in bindings:
-            resolved = {o: resolve(b, behaviors, macros, o) for o in ('タップ', op)}
+            resolved = {o: resolver(b, behaviors, macros, o) for o in ('タップ', op)}
             if _op_distinct(resolved, op, mode):
                 out.append(op)
                 break
@@ -1582,14 +1592,14 @@ def _layer_extra_ops(bindings: list[str], behaviors: dict, macros: dict,
 
 def _html_extra_visual_layers(bindings: list[str], behaviors: dict,
                               macros: dict, geom, unit, mode: str = 'action',
-                              key_px: float = KEY_PX) -> list[str]:
+                              key_px: float = KEY_PX, *, resolver=resolve) -> list[str]:
     """Extra figures (caption + figure) for every op the layer has distinct
     Tap Dance / Mod Morph assignments for. Rendered inside the layer's
     figure-table cell, below the main figure. Returns [] when there are none."""
     out: list[str] = []
-    for op in _layer_extra_ops(bindings, behaviors, macros, mode):
+    for op in _layer_extra_ops(bindings, behaviors, macros, mode, resolver=resolver):
         visual = _html_visual_layer(bindings, behaviors, macros, geom, unit,
-                                    op=op, mode=mode, key_px=key_px)
+                                    op=op, mode=mode, key_px=key_px, resolver=resolver)
         if not visual:
             continue
         out.append(f'<div class="fig-caption">{_html_text(EXTRA_OP_HEADING[op])}</div>')
@@ -1599,7 +1609,7 @@ def _html_extra_visual_layers(bindings: list[str], behaviors: dict,
 
 def _html_figure_table(layers_data: list[tuple[str, list[str]]],
                        behaviors: dict, macros: dict, geom, unit,
-                       mode: str = 'action') -> list[str]:
+                       mode: str = 'action', *, resolver=resolve) -> list[str]:
     """Render every layer's visual figures as one big table: one row per layer,
     layer name in the left header cell, and ALL of that layer's figures (the main
     figure plus its Tap Dance / Mod Morph figures) stacked in the single right
@@ -1611,7 +1621,7 @@ def _html_figure_table(layers_data: list[tuple[str, list[str]]],
     rows: list[str] = []
     for layer_name, bindings in layers_data:
         visual = _html_visual_layer(bindings, behaviors, macros, geom, unit,
-                                    mode=mode, key_px=key_px)
+                                    mode=mode, key_px=key_px, resolver=resolver)
         if not visual:
             continue
         rows.append('<tr>')
@@ -1619,7 +1629,7 @@ def _html_figure_table(layers_data: list[tuple[str, list[str]]],
         rows.append('<td class="fig-cell">')
         rows += visual
         rows += _html_extra_visual_layers(bindings, behaviors, macros, geom, unit,
-                                          mode, key_px)
+                                          mode, key_px, resolver=resolver)
         rows.append('</td>')
         rows.append('</tr>')
     if not rows:
@@ -1661,7 +1671,8 @@ _TABLE_FALLBACK_BULLETS = (
 
 def write_html(layers_data: list[tuple[str, list[str]]],
                behaviors: dict, macros: dict, output_path: Path,
-               grid, display_cols, geom=None, unit=None) -> None:
+               grid, display_cols, geom=None, unit=None,
+               *, resolver=resolve, title=None, show_path=True) -> None:
     """Generate one standalone HTML file.
     Single layer  => H1 layer title, then H2 レイアウト図 / H2 経路.
     Multi layers  => H1 top title, H2 レイアウト図 (one row per layer), then H2 経路.
@@ -1674,9 +1685,10 @@ def write_html(layers_data: list[tuple[str, list[str]]],
 
     # Both sections share the figure machinery; they all come out empty when
     # there is no usable geometry, in which case the 経路 table is the fallback.
-    figure_table = _html_figure_table(layers_data, behaviors, macros, geom, unit)
+    figure_table = _html_figure_table(layers_data, behaviors, macros, geom, unit,
+                                      resolver=resolver)
     path_figures = _html_figure_table(layers_data, behaviors, macros, geom, unit,
-                                      mode='path')
+                                      mode='path', resolver=resolver)
 
     if len(layers_data) == 1:
         layer_name, bindings = layers_data[0]
@@ -1701,22 +1713,26 @@ def write_html(layers_data: list[tuple[str, list[str]]],
             body.append('<p>' + _html_inline(_LAYOUT_FIGURE_INTRO) + '</p>')
             body += figure_table
         # 経路: figure form preferred; table only as the no-geometry fallback.
-        body.append(f'<h2>{_html_inline("経路")}</h2>')
-        if path_figures:
-            body.append('<p>' + _html_inline(_PATH_FIGURE_INTRO) + '</p>')
-            body += path_figures
-        else:
-            header, rows = _build_layer_mode_table(bindings, behaviors, macros, 'path',
-                                                   grid, display_cols)
-            if header is not None:
-                body += _html_table_lines(header, rows)
+        if show_path:
+            body.append(f'<h2>{_html_inline("経路")}</h2>')
+            if path_figures:
+                body.append('<p>' + _html_inline(_PATH_FIGURE_INTRO) + '</p>')
+                body += path_figures
+            else:
+                header, rows = _build_layer_mode_table(bindings, behaviors, macros, 'path',
+                                                       grid, display_cols)
+                if header is not None:
+                    body += _html_table_lines(header, rows)
     else:
-        body.append(f'<h1>{_html_inline("キー割り当て一覧")}</h1>')
-        body.append('<p>' + _html_inline(
-            f'※ {len(layers_data)} 個のレイヤーのキー割り当てを 1 ファイルに集約。'
-            f'各レイヤーの動作は実機の物理配列に合わせた「レイアウト図」セクションで確認し、'
-            f'バインディングの解決経路は「経路」セクションで確認する。'
-        ) + '</p>')
+        body.append(f'<h1>{_html_inline(title or "キー割り当て一覧")}</h1>')
+        if show_path:
+            intro = (f'※ {len(layers_data)} 個のレイヤーのキー割り当てを 1 ファイルに集約。'
+                     f'各レイヤーの動作は実機の物理配列に合わせた「レイアウト図」セクションで確認し、'
+                     f'バインディングの解決経路は「経路」セクションで確認する。')
+        else:
+            intro = (f'※ {len(layers_data)} 個のレイヤーのキー割り当てを 1 ファイルに集約。'
+                     f'各レイヤーの動作は実機の物理配列に合わせた「レイアウト図」セクションで確認する。')
+        body.append('<p>' + _html_inline(intro) + '</p>')
         if not path_figures:
             body.append('<ul>')
             for bullet in _TABLE_FALLBACK_BULLETS:
@@ -1731,11 +1747,12 @@ def write_html(layers_data: list[tuple[str, list[str]]],
             body += figure_table
 
         # 経路: figure form preferred; table only as the no-geometry fallback.
-        body.append(f'<h2>{_html_inline("経路")}</h2>')
-        if path_figures:
+        if show_path and path_figures:
+            body.append(f'<h2>{_html_inline("経路")}</h2>')
             body.append('<p>' + _html_inline(_PATH_FIGURE_INTRO) + '</p>')
             body += path_figures
-        else:
+        elif show_path:
+            body.append(f'<h2>{_html_inline("経路")}</h2>')
             # Positions that are `&none` in the DEFAULT layer are inactive and
             # hidden in every layer's table.
             active_indices = _compute_active_indices(layers_data)
@@ -1763,7 +1780,8 @@ def write_html(layers_data: list[tuple[str, list[str]]],
         '<!DOCTYPE html>\n<html lang="ja">\n<head>\n'
         '<meta charset="utf-8">\n'
         '<meta name="viewport" content="width=device-width, initial-scale=1">\n'
-        '<title>キー割り当て一覧</title>\n<style>\n' + HTML_STYLE + '</style>\n</head>\n<body>\n'
+        '<title>' + _html_text(title or 'キー割り当て一覧') + '</title>\n<style>\n'
+        + HTML_STYLE + '</style>\n</head>\n<body>\n'
         + '\n'.join(body)
         + '\n</body>\n</html>\n'
     )

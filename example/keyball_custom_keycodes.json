@@ -1,0 +1,36 @@
+{
+  "_comment": "Display labels for Keyball (Yowkees) custom QMK keycodes, used by vial_keymap_docgen.py --custom-keycodes. Keys are the keycode enum names as they appear in keymap.c; values are the compact labels shown on the key cap.",
+
+  "AML_TO": "AML切替",
+  "AML_I50": "AML+50",
+  "AML_D50": "AML-50",
+
+  "SSNP_HOR": "Scr横",
+  "SSNP_VRT": "Scr縦",
+  "SSNP_FRE": "Scr自由",
+
+  "SCRL_MO": "Scrl",
+  "SCRL_TO": "Scrl切",
+  "SCRL_DVI": "Scr分割+",
+  "SCRL_DVD": "Scr分割-",
+
+  "CPI_I100": "CPI+100",
+  "CPI_D100": "CPI-100",
+  "CPI_I1K": "CPI+1k",
+  "CPI_D1K": "CPI-1k",
+
+  "KBC_RST": "KB初期化",
+  "KBC_SAVE": "KB保存",
+
+  "RGB_TOG": "RGB入切",
+  "RGB_MOD": "RGB次",
+  "RGB_RMOD": "RGB前",
+  "RGB_HUI": "色相+",
+  "RGB_HUD": "色相-",
+  "RGB_SAI": "彩度+",
+  "RGB_SAD": "彩度-",
+  "RGB_VAI": "明度+",
+  "RGB_VAD": "明度-",
+
+  "QK_BOOT": "BOOT"
+}
