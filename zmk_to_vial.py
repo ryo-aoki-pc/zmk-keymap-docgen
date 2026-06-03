@@ -1331,6 +1331,7 @@ def emit_inc(conv: Converter, source_name: str) -> str:
     w(' */')
     w('')
     w('#include "dynamic_keymap.h"')
+    w('#include "eeconfig.h"')
     w('#include "vial.h"')
     w('#ifdef QMK_SETTINGS')
     w('#    include "qmk_settings.h"')
@@ -1412,6 +1413,12 @@ def emit_inc(conv: Converter, source_name: str) -> str:
 
     # --- application function ---
     w('void eeconfig_init_user(void) {')
+    w('    /* Overriding eeconfig_init_user() suppresses QMK\'s weak default, so')
+    w('     * reproduce it: reset the user EEPROM area to blank. */')
+    w('#if (EECONFIG_USER_DATA_SIZE) == 0')
+    w('    eeconfig_update_user(0);')
+    w('#endif')
+    w('')
     if keymap_entries:
         w('    /* Keymap cells that differ from the pass-through default */')
         w('    for (size_t i = 0; i < ARRAY_SIZE(zmk_keymap_entries); i++) {')

@@ -209,6 +209,8 @@ class TestSampleKeymap:
     def test_inc_compiles_shape(self, sample_conv):
         inc = emit_inc(sample_conv, 'sample.keymap')
         assert 'void eeconfig_init_user(void)' in inc
+        # must reproduce QMK's weak default (zero the user EEPROM area)
+        assert 'eeconfig_update_user(0);' in inc
         assert 'dynamic_keymap_set_keycode' in inc
         assert 'dynamic_keymap_set_key_override' in inc
         assert 'dynamic_keymap_macro_set_buffer' in inc
