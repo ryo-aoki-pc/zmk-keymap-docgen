@@ -633,12 +633,13 @@ DEFAULT_CONFIG = {
     'settings': {},                # QSID(str) -> value
     'tapping_term_ms': None,       # convenience: fills settings["7"]
     'unmapped_keys': 'passthrough',  # or 'none'
-    # Whether the .vil carries the converted key overrides. Some vial-gui
-    # builds mishandle key-override import (their KeyOverrideEntry.restore
-    # deserialises the keycode to an int, which then crashes the key display
-    # with "argument of type 'int' is not iterable"). Set false to omit them
-    # from the .vil and rely on the firmware EEPROM defaults (.inc) instead,
-    # which write key overrides directly and bypass the GUI import path.
+    # Whether the .vil carries the converted key overrides. Their triggers can
+    # be carrier custom keycodes (QK_KB_n, shown as USERnn in vial-gui); the
+    # firmware's vial.json must define those customKeycodes, otherwise vial-gui
+    # cannot resolve them and crashes on import ("argument of type 'int' is not
+    # iterable"). Keep true when the firmware defines the carriers — the .vil is
+    # then self-contained. Set false to omit key overrides and rely on the
+    # firmware EEPROM defaults (.inc) instead.
     'vil_emit_key_override': True,
 }
 
@@ -1701,8 +1702,10 @@ def emit_report(conv: Converter, source_name: str) -> str:
         w('')
         w('### vial.json customKeycodes 追記用スニペット')
         w('')
-        w('Vial GUI 上でキャリアに名前を表示するには、vial.json の `customKeycodes` 配列に')
-        w('以下を追記してください (既存の3エントリの後ろに):')
+        w('これらのキャリアはファームウェアの `vial.json` の `customKeycodes` で定義が必要です。')
+        w('未定義のファームウェアでは Vial GUI がキャリアを解決できず、`.vil` の')
+        w('キーオーバーライド取り込み時にクラッシュします (`argument of type \'int\' is not '
+          'iterable`)。以下を `customKeycodes` 配列に追記してください (既存の3エントリの後ろに):')
         w('')
         w('```json')
         snippet = []
