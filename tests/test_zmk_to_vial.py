@@ -227,8 +227,8 @@ class TestSampleKeymap:
         assert all(len(row) == 8 for layer in vil['layout'] for row in layer)
         assert len(vil['macro']) == 16
         assert len(vil['tap_dance']) == 32
-        assert len(vil['combo']) == 32
-        assert len(vil['key_override']) == 32
+        assert vil['combo'] == []                            # no combos generated
+        assert len(vil['key_override']) == 32                # emitted by default
         assert len(vil['encoder_layout']) == 8
         # layout cells stay ints (restore_layout normalises via serialize(deserialize))
         for layer in vil['layout']:
@@ -246,9 +246,6 @@ class TestSampleKeymap:
         for entry in vil['tap_dance']:
             assert entry[0:4] == ['KC_NO', 'KC_NO', 'KC_NO', 'KC_NO']
             assert isinstance(entry[4], int)
-        # combo: all five fields are keycode strings
-        for entry in vil['combo']:
-            assert entry == ['KC_NO'] * 5
         # key override: trigger/replacement strings, masks ints
         ko = vil['key_override'][0]                          # mm_comma
         assert ko['trigger'] == 'KC_COMMA'
@@ -260,6 +257,18 @@ class TestSampleKeymap:
         # macro: action keycodes are strings, delays ints
         macro = vil['macro'][0]                              # macro_hi: H, I
         assert macro == [['tap', 'KC_H', 'KC_I']]
+
+    def test_vil_omit_key_override(self, tmp_path):
+        """With vil_emit_key_override=False the .vil carries no key overrides
+        (they come from the firmware EEPROM defaults instead), so a vial-gui
+        build that mishandles key-override import does not crash."""
+        config = load_config(EXAMPLE / 'sample.vialmap.json')
+        config['vil_emit_key_override'] = False
+        conv = Converter(EXAMPLE / 'sample.keymap', config).convert()
+        vil = emit_vil(conv)
+        assert vil['key_override'] == []
+        # the .inc still applies the key overrides on the firmware side
+        assert 'dynamic_keymap_set_key_override' in emit_inc(conv, 'sample.keymap')
 
     def test_inc_compiles_shape(self, sample_conv):
         inc = emit_inc(sample_conv, 'sample.keymap')

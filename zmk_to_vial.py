@@ -633,6 +633,13 @@ DEFAULT_CONFIG = {
     'settings': {},                # QSID(str) -> value
     'tapping_term_ms': None,       # convenience: fills settings["7"]
     'unmapped_keys': 'passthrough',  # or 'none'
+    # Whether the .vil carries the converted key overrides. Some vial-gui
+    # builds mishandle key-override import (their KeyOverrideEntry.restore
+    # deserialises the keycode to an int, which then crashes the key display
+    # with "argument of type 'int' is not iterable"). Set false to omit them
+    # from the .vil and rely on the firmware EEPROM defaults (.inc) instead,
+    # which write key overrides directly and bypass the GUI import path.
+    'vil_emit_key_override': True,
 }
 
 
@@ -1407,25 +1414,31 @@ def emit_vil(conv: Converter) -> dict:
         td_list[td.index] = [kc(td.on_tap), kc(td.on_hold), kc(td.on_double_tap),
                              kc(td.on_tap_hold), td.tapping_term]
 
-    combo_list = [[NO] * 5 for _ in range(32)]
+    # No combos are generated; an empty list leaves the device's combos
+    # untouched (and avoids any filler-keycode display issues on import).
+    combo_list: list = []
 
-    ko_list = []
-    for ko in conv.key_overrides:
-        ko_list.append({
-            'trigger': kc(ko.trigger),
-            'replacement': kc(ko.replacement),
-            'layers': ko.layers if ko.layers else ALL_LAYERS_MASK,
-            'trigger_mods': ko.trigger_mods,
-            'negative_mod_mask': ko.negative_mod_mask,
-            'suppressed_mods': ko.suppressed_mods,
-            'options': ko.options,
-        })
-    while len(ko_list) < 32:
-        ko_list.append({
-            'trigger': NO, 'replacement': NO, 'layers': ALL_LAYERS_MASK,
-            'trigger_mods': 0, 'negative_mod_mask': 0, 'suppressed_mods': 0,
-            'options': 0,
-        })
+    # Key overrides: optionally omitted from the .vil (see vil_emit_key_override
+    # in DEFAULT_CONFIG). When omitted, an empty list leaves the device's key
+    # overrides untouched — they are provided by the firmware EEPROM defaults.
+    ko_list: list = []
+    if cfg.get('vil_emit_key_override', True):
+        for ko in conv.key_overrides:
+            ko_list.append({
+                'trigger': kc(ko.trigger),
+                'replacement': kc(ko.replacement),
+                'layers': ko.layers if ko.layers else ALL_LAYERS_MASK,
+                'trigger_mods': ko.trigger_mods,
+                'negative_mod_mask': ko.negative_mod_mask,
+                'suppressed_mods': ko.suppressed_mods,
+                'options': ko.options,
+            })
+        while len(ko_list) < 32:
+            ko_list.append({
+                'trigger': NO, 'replacement': NO, 'layers': ALL_LAYERS_MASK,
+                'trigger_mods': 0, 'negative_mod_mask': 0, 'suppressed_mods': 0,
+                'options': 0,
+            })
 
     return {
         'version': 1,
@@ -1722,13 +1735,33 @@ def emit_report(conv: Converter, source_name: str) -> str:
             w(f'- {warning}')
         w('')
 
+    emit_ko = conv.config.get('vil_emit_key_override', True)
+
     w('## 使い方')
     w('')
-    w('1. **Vial GUI**: `File → Load saved layout...` で生成された `.vil` を読み込む')
-    w('   (Quantizer Mini を接続した状態で)。レイヤー・マクロ・タップダンス・キーオーバーライドが書き込まれます。')
-    w('2. **ファームウェア組込 (任意)**: 生成された `.inc` を vial-qmk の')
-    w('   `keyboards/sekigon/keyboard_quantizer/mini/keymaps/vial/` に配置し、keymap.c の末尾で')
-    w('   `#include` してビルドすると、EEPROM リセット時のデフォルトとして同じ内容が適用されます。')
+    w('### 方法A: ファームウェア組込 (推奨・確実)')
+    w('')
+    w('生成された `.inc` を vial-qmk の')
+    w('`keyboards/sekigon/keyboard_quantizer/mini/keymaps/vial/` に配置し、keymap.c の末尾で')
+    w('`#include` してビルド・書き込みます。EEPROM (再)初期化時に、レイヤー・マクロ・')
+    w('タップダンス・**キーオーバーライド**を含む全設定が EEPROM に直接書き込まれます。')
+    w('vial-gui の取り込み経路を通らないため、GUI のバージョン差異の影響を受けません。')
+    w('')
+    w('### 方法B: Vial GUI で .vil を読み込む')
+    w('')
+    w('`File → Load saved layout...` で生成された `.vil` を読み込みます')
+    w('(Quantizer Mini を接続した状態で)。')
+    if emit_ko:
+        w('レイヤー・マクロ・タップダンス・キーオーバーライドが書き込まれます。')
+    else:
+        w('レイヤー・マクロ・タップダンスが書き込まれます。')
+        w('')
+        w('> ⚠️ **キーオーバーライドはこの `.vil` には含めていません** '
+          '(`vil_emit_key_override: false`)。')
+        w('> 一部の vial-gui ビルドはキーオーバーライドの取り込みに失敗し '
+          '(`argument of type \'int\' is not iterable`)、')
+        w('> クラッシュするためです。キーオーバーライド (モッドモーフ変換) は方法A '
+          '(ファームウェア EEPROM デフォルト) で投入してください。')
     w('')
     return '\n'.join(lines)
 
