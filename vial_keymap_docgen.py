@@ -522,8 +522,8 @@ def main(argv=None) -> int:
     p.add_argument('input', help='QMK keymap.c or Vial .vil file')
     p.add_argument('layers', nargs='*',
                    help='Optional layer indices to include (default: all).')
-    p.add_argument('-o', '--output', default='KEYMAP-vial.html',
-                   help='Output HTML path (default: KEYMAP-vial.html)')
+    p.add_argument('-o', '--output', default='KEYMAP.html',
+                   help='Output HTML path (default: KEYMAP.html)')
     p.add_argument('-l', '--layout', required=True,
                    help='Physical-layout JSON: QMK info.json / Vial vial.json / '
                         'VIA via.json / docgen layout JSON.')

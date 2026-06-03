@@ -256,9 +256,9 @@ pip install pytest && python -m pytest tests/ -v
 ## Vial / QMK keymaps (`vial_keymap_docgen.py`)
 
 The same physical-layout HTML can be generated for a **QMK/Vial** keymap, so a
-Vial keyboard gets a `KEYMAP-vial.html` that looks just like the ZMK
-`KEYMAP.html`. It reuses `keymap_docgen.py`'s figure renderer through a pluggable
-resolver, driven by a QMK keycode resolver instead of the ZMK one.
+Vial keyboard gets a `KEYMAP.html` that looks just like ZMK's. It reuses
+`keymap_docgen.py`'s figure renderer through a pluggable resolver, driven by a
+QMK keycode resolver instead of the ZMK one.
 
 Two input modes (auto-detected from the extension, override with `--format`):
 
@@ -267,12 +267,12 @@ Two input modes (auto-detected from the extension, override with `--format`):
 python vial_keymap_docgen.py path/to/keymaps/<map>/keymap.c \
     --layout path/to/info.json \
     --custom-keycodes example/keyball_custom_keycodes.json \
-    -o KEYMAP-vial.html
+    -o KEYMAP.html
 
 # Vial .vil (integer layout[layer][row][col]) on a Vial vial.json (KLE) layout
 python vial_keymap_docgen.py path/to/KEYMAP.vil --format vil \
     --layout path/to/keymaps/vial/vial.json \
-    -o KEYMAP-vial.html
+    -o KEYMAP.html
 ```
 
 * **Keycodes** — basic `KC_*` (short and long spellings), `MT`/`xxx_T` (tap on
