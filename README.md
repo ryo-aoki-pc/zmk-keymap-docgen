@@ -153,6 +153,106 @@ The keyboard's `tools/<board>.layout.json` stays put (it's a sibling, not part o
 the submodule), and the workflow already checks out submodules
 (`actions/checkout` with `submodules: recursive`), so CI keeps working unchanged.
 
+## ZMK → Vial conversion (`zmk_to_vial.py`)
+
+`zmk_to_vial.py` converts a ZMK `.keymap` into a **Vial keymap for the
+[Keyboard Quantizer Mini](https://github.com/sekigon-gonnoc)** (a USB
+keyboard converter running vial-qmk), so the same layers / hold-taps /
+macros / tap-dances / mod-morphs work when typing on a regular USB keyboard
+through the Quantizer.
+
+It reuses this repo's ZMK parser and emits three files:
+
+| output | purpose |
+|--------|---------|
+| `<name>.vil` | Load into the Vial GUI (`File → Load saved layout...`) — writes layers, macros, tap dances and key overrides to the keyboard. Keycodes are emitted as integers, which the GUI accepts regardless of its keycode-name set. |
+| `<name>_vial_defaults.inc` | C include for vial-qmk. `#include` it at the end of the Quantizer's `keymaps/vial/keymap.c` to apply the same configuration as EEPROM defaults on every EEPROM (re)initialisation. |
+| `<name>_vial_report.md` | Human-readable conversion report: key placement, macro/tap-dance/key-override tables, carrier assignments and warnings. |
+
+### How the conversion works
+
+* **Key placement** — the Quantizer's 32×8 matrix encodes the HID usage code
+  of the key pressed on the attached keyboard
+  (`HID k → row=(k>>3)+1, col=k&7`; modifiers `0xE0..0xE7 → row 0`).
+  Each ZMK position is identified by its **BASE-layer tap keycode**
+  (`&kp Q` → the attached keyboard's Q key, `&mt LCTRL A` → the A key).
+  Positions without a tap identity (`&mo FUNC` …) are assigned through the
+  mapping config.
+* **Unmapped keys pass through** — keys of the attached keyboard that don't
+  exist in the ZMK keymap keep typing their own character (configurable via
+  `"unmapped_keys": "none"`).
+* **Behaviours** — `&kp`/`&mt`/`&lt`/`&mo`/`&to`/`&trans`/`&none`/
+  `&bootloader`/`&sys_reset`/`&mkp` map to their QMK equivalents; ZMK macros
+  become Vial dynamic macros (waits → delays, `&macro_press/release` →
+  down/up); tap-dances become Vial tap dance entries; **mod-morphs become
+  Vial key overrides**.
+* **Mod-morph rules** — if the morph's no-mod branch is a placeable keycode
+  (basic key / tap dance / `&to`), it becomes the position's keycode and each
+  mod branch becomes a key override triggering on it. If the no-mod branch is
+  `&none`, a mod-wrapped keycode (`&kp LC(Z)`) or a macro — none of which can
+  act as key-override triggers on this firmware — the position gets a
+  **carrier** custom keycode (`QK_KB_3`, `QK_KB_4`, …) and the overrides
+  trigger on the carrier.
+* **Layer limit** — Vial dynamic keymaps have 8 layers; ZMK layers that make
+  no sense on the Quantizer (Bluetooth, trackball mouse layers) are excluded
+  via the config and the remaining layer indices are remapped.
+
+### Usage
+
+```sh
+python zmk_to_vial.py config/MyBoard.keymap -m tools/MyBoard.vialmap.json \
+    --vil MyBoard.vil --inc zmk_keymap_defaults.inc --report MyBoard_vial_report.md
+```
+
+- `-m, --mapping` — per-keyboard mapping config (see below).
+- `--vil` / `--inc` / `--report` — output paths (default: next to the keymap).
+- `--exclude-layers` — comma-separated layer names/indices (overrides config).
+- `--strict` — exit non-zero when there are warnings.
+
+### Mapping config schema
+
+```jsonc
+{
+  "keyboard": "sekigon/keyboard_quantizer/mini",
+  "layer_count": 8,
+  // ZMK layers to drop (node names, #define aliases or indices)
+  "exclude_layers": ["BLUETOOTH", "MOUSE_MOVE", "MOUSE_SCROLL"],
+  // physical key for BASE-layer bindings that have no tap keycode;
+  // keys are raw binding strings (#define aliases allowed), values are
+  // ZMK key names (null = drop the position)
+  "identityless_positions": {
+    "&mo SYM": "RIGHT_ALT",
+    "&mo VIM_BASE": "CAPS_LOCK",
+    "&mo FUNC": "APPLICATION",
+    "&mo BT": null
+  },
+  "carrier_start": 3,                    // first QK_KB_n used as a carrier
+  "vial_uid": ["0x05", "0xE4", "..."],  // VIAL_KEYBOARD_UID of the firmware
+  "layout_options": 0,
+  "tapping_term_ms": 150,                // → QMK settings QSID 7
+  "settings": { "22": 1 },               // extra QMK settings (22 = permissive hold)
+  "unmapped_keys": "passthrough"         // or "none"
+}
+```
+
+### Known limitations
+
+* Key-override trigger conflicts: two different morphs resolving to the same
+  trigger keycode on the same layer are reported as warnings.
+* ZMK behaviours with no Vial equivalent (`&bt`, `&out`, sticky keys,
+  `&macro_pause_for_release`, tap-dances with 3+ taps) are dropped with a
+  warning.
+* The firmware-side feature set assumed here matches
+  [vial-qmk-kq-mini](https://github.com/ryo-aoki-pc/vial-qmk-kq-mini)
+  (key overrides may fire Vial macros; key-override layer matching uses the
+  active top layer).
+
+### Tests
+
+```sh
+pip install pytest && python -m pytest tests/ -v
+```
+
 ## License
 
 MIT — see [LICENSE](LICENSE).

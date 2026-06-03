@@ -5,3 +5,4 @@ __pycache__/
 # Generated docs output
 *.xlsx
 *.html
+.pytest_cache/
