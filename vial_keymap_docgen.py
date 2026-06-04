@@ -74,9 +74,10 @@ QMK_BASIC_LABELS = {
     'PLUS': '+', 'LCBR': '{', 'RCBR': '}', 'PIPE': '|', 'COLN': ':',
     'DQUO': '"', 'TILD': '~', 'LABK': '<', 'RABK': '>', 'QUES': '?',
     # modifiers (as plain keys)
-    'LCTL': 'LCtrl', 'LEFT_CTRL': 'LCtrl', 'LEFT_CONTROL': 'LCtrl',
-    'RCTL': 'RCtrl', 'RIGHT_CTRL': 'RCtrl', 'RIGHT_CONTROL': 'RCtrl',
-    'LSFT': 'LShift', 'LEFT_SHIFT': 'LShift', 'RSFT': 'RShift', 'RIGHT_SHIFT': 'RShift',
+    'LCTL': 'LCtrl', 'LCTRL': 'LCtrl', 'LEFT_CTRL': 'LCtrl', 'LEFT_CONTROL': 'LCtrl',
+    'RCTL': 'RCtrl', 'RCTRL': 'RCtrl', 'RIGHT_CTRL': 'RCtrl', 'RIGHT_CONTROL': 'RCtrl',
+    'LSFT': 'LShift', 'LSHIFT': 'LShift', 'LEFT_SHIFT': 'LShift',
+    'RSFT': 'RShift', 'RSHIFT': 'RShift', 'RIGHT_SHIFT': 'RShift',
     'LALT': 'LAlt', 'LEFT_ALT': 'LAlt', 'RALT': 'RAlt', 'RIGHT_ALT': 'RAlt',
     'LGUI': 'LWin', 'LEFT_GUI': 'LWin', 'RGUI': 'RWin', 'RIGHT_GUI': 'RWin',
     # mouse buttons
@@ -127,16 +128,60 @@ def mod_mask_label(mods: str) -> str:
     return '+'.join(parts) if parts else 'Mod'
 
 
-def make_qmk_resolver(layer_names=None, custom_labels=None):
+# Modifier keycode (KC_LSHIFT …) -> glyph, for compressing macro down/up spans.
+_MACRO_MOD_GLYPH = {
+    'LSHIFT': '⇧', 'RSHIFT': '⇧', 'LSFT': '⇧', 'RSFT': '⇧',
+    'LCTRL': '⌃', 'RCTRL': '⌃', 'LCTL': '⌃', 'RCTL': '⌃',
+    'LALT': '⌥', 'RALT': '⌥', 'LGUI': '⌘', 'RGUI': '⌘',
+}
+
+
+def summarize_vil_macro(actions, label_fn) -> str:
+    """Summarise a .vil macro action list ([["tap",kc], ["down",kc], ["up",kc],
+    ["delay",ms]]) into a ' ▸ '-joined string (ZMK summarize_macro style). A held
+    modifier span (down LSHIFT … tap END … up LSHIFT) is compressed to a glyph
+    prefix (⇧End); delays are omitted; `label_fn(token)` labels a keycode."""
+    def mod_glyph(kc):
+        name = kc[3:] if isinstance(kc, str) and kc.startswith('KC_') else kc
+        return _MACRO_MOD_GLYPH.get(name)
+
+    held, parts = [], []
+    for act in actions or []:
+        if not act:
+            continue
+        kind = act[0]
+        if kind == 'tap':
+            parts.append(''.join(held) + label_fn(act[1]))
+        elif kind == 'down':
+            g = mod_glyph(act[1])
+            held.append(g) if g else parts.append('↓' + label_fn(act[1]))
+        elif kind == 'up':
+            g = mod_glyph(act[1])
+            if g:
+                if g in held:
+                    held.remove(g)
+            else:
+                parts.append('↑' + label_fn(act[1]))
+        # 'delay' (and anything else) omitted
+    return ' ▸ '.join(parts)
+
+
+def make_qmk_resolver(layer_names=None, custom_labels=None,
+                      vil_macros=None, tap_dances=None):
     """Build a keymap_docgen resolver (binding, behaviors, macros, op) ->
     (action, path) for QMK/Vial keycode expressions.
 
     Plain keycodes return the SAME value for every non-hold operation so the
     renderer finds nothing distinct and emits no spurious Tap Dance / Mod Morph
     extra figure (unlike ZMK's &kp, which deliberately returns ⇧X / X×2). Only
-    mod-tap / layer-tap produce a distinct hold face."""
+    mod-tap / layer-tap produce a distinct hold face. `vil_macros` ({n: summary})
+    expands macro references to their contents; `tap_dances` ({n: {tap, hold,
+    double}}) makes a tap dance's double-tap a distinct op (so the renderer emits
+    the 'Tap Dance: ダブルタップ' figure)."""
     layer_names = layer_names or {}
     custom_labels = custom_labels or {}
+    vil_macros = vil_macros or {}
+    tap_dances = tap_dances or {}
 
     def layer_label(n):
         try:
@@ -202,12 +247,11 @@ def make_qmk_resolver(layer_names=None, custom_labels=None):
         # Bare tokens
         if b in custom_labels:
             return (custom_labels[b], '')
-        m = re.fullmatch(r'QK_MACRO_(\d+)', b) or re.fullmatch(r'MACRO_(\d+)', b)
+        m = (re.fullmatch(r'QK_MACRO_(\d+)', b) or re.fullmatch(r'MACRO_(\d+)', b)
+             or re.fullmatch(r'M(\d+)', b))
         if m:
-            return (f'M{m.group(1)}', '')
-        m = re.fullmatch(r'M(\d+)', b)
-        if m:
-            return (f'M{m.group(1)}', '')
+            n = int(m.group(1))
+            return (vil_macros.get(n, f'M{n}'), '')
         if b in ('QK_BOOT', 'RESET'):
             return ('BOOT', '')
         if b in ('QK_RBT', 'QK_REBOOT'):
@@ -223,6 +267,15 @@ def make_qmk_resolver(layer_names=None, custom_labels=None):
             return kd.resolve('&trans', {}, {}, op)
         if b in NONE_TOKENS:
             return kd.resolve('&none', {}, {}, op)
+        m = re.fullmatch(r'TD\((\d+)\)', b)
+        if m and int(m.group(1)) in tap_dances:
+            td = tap_dances[int(m.group(1))]
+            sub = {'ダブルタップ': td.get('double'),
+                   'ホールド': td.get('hold')}.get(op, td.get('tap'))
+            if not sub or sub in NONE_TOKENS or sub in TRANS_TOKENS:
+                # nothing for this op; mark the cap so the tap-dance key isn't blank
+                return (f'TD{m.group(1)}' if op == 'タップ' else '', b)
+            return (faces(sub)[0], b)
         tap, hold = faces(b)
         return (hold if op == 'ホールド' else tap, b)
 
@@ -663,6 +716,8 @@ def main(argv=None) -> int:
         vial_json, Path(args.custom_keycodes) if args.custom_keycodes else None)
 
     extra_figures = None  # per-layer Vial key-override figures (.vil path only)
+    vil_macros = None      # {n: summary} for macro contents (.vil path only)
+    tap_dances = None      # {n: {tap, hold, double}} for tap-dance double-tap figures
     if fmt == 'keymap_c':
         # keymap.c may carry Shift-JIS comments (non-UTF-8); they are stripped
         # before parsing, so decode tolerantly rather than failing.
@@ -705,6 +760,14 @@ def main(argv=None) -> int:
             return 1
         overrides = parse_vil_key_overrides(vil)
         default_map = overrides_default_map(overrides, len(vil_layout))
+        # Macro contents and tap-dance double-taps (rendered by the resolver).
+        _label = make_qmk_resolver(layer_names={}, custom_labels=custom_labels)
+        vil_macros = {i: summarize_vil_macro(mac, lambda t: _label(t, {}, {}, 'タップ')[0])
+                      for i, mac in enumerate(vil.get('macro') or []) if mac}
+        tap_dances = {}
+        for i, td in enumerate(vil.get('tap_dance') or []):
+            if td and any(x not in ('KC_NO', 'KC_TRNS') for x in td[:4] if isinstance(x, str)):
+                tap_dances[i] = {'tap': td[0], 'hold': td[1], 'double': td[2]}
         layers_data = []
         for layer in range(len(vil_layout)):
             bindings = build_vil_layer_bindings(vil_layout, layer, matrix, custom_by_int,
@@ -731,7 +794,8 @@ def main(argv=None) -> int:
                        if str(i) in want or n in want]
 
     layer_names = {i: f'L{i}' for i in range(len(layers_data))}
-    qmk_resolver = make_qmk_resolver(layer_names=layer_names, custom_labels=custom_labels)
+    qmk_resolver = make_qmk_resolver(layer_names=layer_names, custom_labels=custom_labels,
+                                     vil_macros=vil_macros, tap_dances=tap_dances)
 
     kd.KEY_LABELS.clear()
     kd.KEY_LABELS.update(labels)

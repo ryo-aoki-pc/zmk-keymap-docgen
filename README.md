@@ -293,6 +293,10 @@ python vial_keymap_docgen.py path/to/KEYMAP.vil --format vil \
   produces from ZMK mod-morphs) render like the ZMK mod-morph figures: a per-mod
   `Key Override: Shift+` / `Key Override: Ctrl+` figure is added to each layer (in
   both sections), and a carrier key's cap shows its no-modifier output.
+* **Macros & tap dances** — a `.vil`'s `macro` contents are shown in place of the
+  `Mn` label (held-modifier spans compressed, e.g. `Home ▸ ⇧End ▸ ⌃X`), and a tap
+  dance's double-tap action becomes its own `Tap Dance: ダブルタップ` figure
+  (like ZMK), with the on-double-tap action (often a macro) shown there.
 
 The ZMK path is unchanged — the new resolver/title/path/extra_figures parameters
 on `keymap_docgen.write_html` default to the existing behaviour (covered by a

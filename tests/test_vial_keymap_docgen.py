@@ -254,6 +254,27 @@ def test_vil_key_overrides_parse_and_render():
     assert op_bindings == ['LCTL(KC_BSPACE)', '&none']
 
 
+def test_summarize_vil_macro_compresses_mod_spans():
+    base = v.make_qmk_resolver()
+    label = lambda t: base(t, {}, {}, 'タップ')[0]
+    m0 = [['tap', 'KC_HOME'], ['delay', 100], ['down', 'KC_LSHIFT'], ['tap', 'KC_END'],
+          ['up', 'KC_LSHIFT'], ['delay', 100], ['down', 'KC_LCTRL'], ['tap', 'KC_X'],
+          ['up', 'KC_LCTRL']]
+    assert v.summarize_vil_macro(m0, label) == 'Home ▸ ⇧End ▸ ⌃X'
+
+
+def test_resolver_macro_content_and_tapdance_doubletap():
+    res = v.make_qmk_resolver(
+        vil_macros={0: 'Home ▸ ⇧End ▸ ⌃X', 3: '⇧End ▸ ⌃C'},
+        tap_dances={0: {'tap': 'KC_NO', 'hold': 'KC_NO', 'double': 'M0'}})
+    # macro reference (e.g. an override replacement) shows its content
+    assert res('M3', {}, {}, 'タップ')[0] == '⇧End ▸ ⌃C'
+    assert res('QK_MACRO_0', {}, {}, 'タップ')[0] == 'Home ▸ ⇧End ▸ ⌃X'
+    # tap dance: single tap marks the key, double-tap shows the (macro) action -> distinct
+    assert res('TD(0)', {}, {}, 'タップ')[0] == 'TD0'
+    assert res('TD(0)', {}, {}, 'ダブルタップ')[0] == 'Home ▸ ⇧End ▸ ⌃X'
+
+
 def test_zmk_write_html_default_resolver_unchanged(tmp_path):
     raw = (REPO_ROOT / 'example/sample.keymap').read_text(encoding='utf-8')
     content = kd.expand_defines(kd.strip_comments(raw), kd.parse_defines(raw))
