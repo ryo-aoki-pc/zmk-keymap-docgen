@@ -285,9 +285,21 @@ python vial_keymap_docgen.py path/to/KEYMAP.vil --format vil \
   `keymap.c` `LAYOUT` arguments) or Vial `vial.json` / VIA `via.json` (KLE,
   matrix-indexed; pick the layout option with `--layout-variant`, default the
   `.vil`'s `layout_options`). A `keymap_docgen` physical-layout JSON also works.
+* **経路 (path) section** — like the ZMK `KEYMAP.html`, a 経路 section showing
+  each key's raw keycode (`MT(MOD_LCTL, KC_A)`, `LT(2, KC_SPACE)`, `TD(1)` …) is
+  included by default. It is rendered at the layout key size (compact), since
+  QMK tokens are short; pass `--no-path` to omit it, or `--path-key-px` to resize.
+* **Key overrides** — a `.vil`'s `key_override` entries (which `zmk_to_vial.py`
+  produces from ZMK mod-morphs) render like the ZMK mod-morph figures: a per-mod
+  `Key Override: Shift+` / `Key Override: Ctrl+` figure is added to each layer (in
+  both sections), and a carrier key's cap shows its no-modifier output.
+* **Macros & tap dances** — a `.vil`'s `macro` contents are shown in place of the
+  `Mn` label (held-modifier spans compressed, e.g. `Home ▸ ⇧End ▸ ⌃X`), and a tap
+  dance's double-tap action becomes its own `Tap Dance: ダブルタップ` figure
+  (like ZMK), with the on-double-tap action (often a macro) shown there.
 
-The ZMK path is unchanged — the new resolver/title parameters on
-`keymap_docgen.write_html` default to the existing behaviour (covered by a
+The ZMK path is unchanged — the new resolver/title/path/extra_figures parameters
+on `keymap_docgen.write_html` default to the existing behaviour (covered by a
 regression test).
 
 ## License

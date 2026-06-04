@@ -3,6 +3,8 @@
 Run with: python -m pytest tests/test_vial_keymap_docgen.py
 """
 
+import json
+import re
 import sys
 from pathlib import Path
 
@@ -191,6 +193,87 @@ def test_build_vil_layer_bindings_indexes_matrix():
 # --------------------------------------------------------------------------
 # ZMK regression guard: the new resolver default must not change ZMK output
 # --------------------------------------------------------------------------
+
+def test_path_key_px_scales_path_figure():
+    layers = [('L0', ['KC_A', 'KC_B'])]
+    coords, labels, geom, unit, rowcol = v.adapt_qmk_info_layout(
+        {'layouts': {'L': {'layout': [{'x': 0, 'y': 0}, {'x': 1, 'y': 0}]}}})
+    resolver = v.make_qmk_resolver()
+
+    def kb_width(pkpx):
+        html = '\n'.join(kd._html_figure_table(layers, {}, {}, geom, unit,
+                         mode='path', resolver=resolver, path_key_px=pkpx))
+        return float(re.search(r'class="kb path" style="width:([0-9.]+)px', html).group(1))
+
+    # 1x (compact) path figure is half the width of ZMK's 2x default.
+    assert kb_width(kd.KEY_PX) == pytest.approx(kb_width(kd.PATH_KEY_PX) / 2, rel=0.02)
+
+
+def test_vial_main_path_section_default_and_no_path(tmp_path):
+    kc = tmp_path / 'keymap.c'
+    kc.write_text('const uint16_t x[][1][1] = { [0] = LAYOUT(KC_A, KC_B) };')
+    layout = tmp_path / 'info.json'
+    layout.write_text(json.dumps(
+        {'layouts': {'LAYOUT': {'layout': [{'x': 0, 'y': 0}, {'x': 1, 'y': 0}]}}}))
+    out = tmp_path / 'out.html'
+    # 経路 included by default (like ZMK).
+    assert v.main([str(kc), '--layout', str(layout), '-o', str(out)]) == 0
+    assert '<h2>経路</h2>' in out.read_text()
+    # --no-path omits it.
+    assert v.main([str(kc), '--layout', str(layout), '-o', str(out), '--no-path']) == 0
+    assert '<h2>経路</h2>' not in out.read_text()
+
+
+def test_vil_key_overrides_parse_and_render():
+    # Carrier QK_KB+3 on layer 0: no-ctrl -> LCTL(KC_RIGHT); ctrl-held -> LCTL(KC_BSPACE).
+    carrier = zv.QK_KB + 3
+    vil = {
+        'layout': [[[carrier, zv.KC_NO]]],   # 1 layer, 1 row, 2 cols
+        'key_override': [
+            {'trigger': 'USER03', 'replacement': 'LCTL(KC_RIGHT)', 'layers': 1,
+             'trigger_mods': 0, 'negative_mod_mask': zv.MOD_MASK_LCTL},
+            {'trigger': 'USER03', 'replacement': 'LCTL(KC_BSPACE)', 'layers': 1,
+             'trigger_mods': zv.MOD_MASK_LCTL, 'negative_mod_mask': 0},
+        ],
+    }
+    ovr = v.parse_vil_key_overrides(vil)
+    assert sorted(o['condition'] for o in ovr) == ['Ctrl+', 'default']
+
+    # The no-mod (default) override replaces the opaque carrier on the cap.
+    dmap = v.overrides_default_map(ovr, 1)
+    matrix = [(0, 0), (0, 1)]
+    binds = v.build_vil_layer_bindings(vil['layout'], 0, matrix, {carrier: 'MM_X'},
+                                       default_overrides=dmap)
+    assert binds[0] == 'LCTL(KC_RIGHT)'
+
+    # The mod-held override becomes a separate "Key Override: Ctrl+" figure.
+    figs = v.make_override_figures(vil['layout'], matrix, ovr)('Layer 0', binds)
+    assert len(figs) == 1
+    caption, op_bindings = figs[0]
+    assert caption == 'Key Override: Ctrl+'
+    assert op_bindings == ['LCTL(KC_BSPACE)', '&none']
+
+
+def test_summarize_vil_macro_compresses_mod_spans():
+    base = v.make_qmk_resolver()
+    label = lambda t: base(t, {}, {}, 'タップ')[0]
+    m0 = [['tap', 'KC_HOME'], ['delay', 100], ['down', 'KC_LSHIFT'], ['tap', 'KC_END'],
+          ['up', 'KC_LSHIFT'], ['delay', 100], ['down', 'KC_LCTRL'], ['tap', 'KC_X'],
+          ['up', 'KC_LCTRL']]
+    assert v.summarize_vil_macro(m0, label) == 'Home ▸ ⇧End ▸ ⌃X'
+
+
+def test_resolver_macro_content_and_tapdance_doubletap():
+    res = v.make_qmk_resolver(
+        vil_macros={0: 'Home ▸ ⇧End ▸ ⌃X', 3: '⇧End ▸ ⌃C'},
+        tap_dances={0: {'tap': 'KC_NO', 'hold': 'KC_NO', 'double': 'M0'}})
+    # macro reference (e.g. an override replacement) shows its content
+    assert res('M3', {}, {}, 'タップ')[0] == '⇧End ▸ ⌃C'
+    assert res('QK_MACRO_0', {}, {}, 'タップ')[0] == 'Home ▸ ⇧End ▸ ⌃X'
+    # tap dance: single tap marks the key, double-tap shows the (macro) action -> distinct
+    assert res('TD(0)', {}, {}, 'タップ')[0] == 'TD0'
+    assert res('TD(0)', {}, {}, 'ダブルタップ')[0] == 'Home ▸ ⇧End ▸ ⌃X'
+
 
 def test_zmk_write_html_default_resolver_unchanged(tmp_path):
     raw = (REPO_ROOT / 'example/sample.keymap').read_text(encoding='utf-8')
