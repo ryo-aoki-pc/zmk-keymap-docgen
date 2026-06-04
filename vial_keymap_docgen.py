@@ -358,16 +358,114 @@ def qmk_int_to_token(value: int, custom_by_int: dict | None = None) -> str:
 
 
 def build_vil_layer_bindings(vil_layout, layer: int, matrix: list[tuple[int, int]],
-                             custom_by_int: dict | None = None) -> list[str]:
-    """Bindings for one .vil layer in figure order (matrix[i] -> layout[layer][r][c])."""
+                             custom_by_int: dict | None = None,
+                             default_overrides: dict | None = None) -> list[str]:
+    """Bindings for one .vil layer in figure order (matrix[i] -> layout[layer][r][c]).
+    When a cell matches a no-mod ('default') key override on this layer, show its
+    replacement instead of the (often opaque carrier) keycode."""
     rows = vil_layout[layer]
+    dflt = (default_overrides or {}).get(layer, {})
     out = []
     for (r, c) in matrix:
         try:
-            out.append(qmk_int_to_token(rows[r][c], custom_by_int))
+            kc = rows[r][c]
         except (IndexError, TypeError):
             out.append('&none')
+            continue
+        vs = zv.keycode_to_vial_string(kc)
+        out.append(dflt[vs] if vs in dflt else qmk_int_to_token(kc, custom_by_int))
     return out
+
+
+# ----------------------------------------------------------------------------
+# Vial key overrides (converted from ZMK mod-morphs) -> per-layer extra figures
+# ----------------------------------------------------------------------------
+
+_SHIFT_MASK = zv.MOD_MASK_LSFT | zv.MOD_MASK_RSFT
+_CTRL_MASK = zv.MOD_MASK_LCTL | zv.MOD_MASK_RCTL
+
+
+def _override_condition(trigger_mods: int, negative_mod_mask: int):
+    """Classify a key override's condition: 'default' (no-mod, shown on the cap),
+    'Shift+', 'Ctrl+', or a mod label for Alt/GUI/mixed; None to skip."""
+    if trigger_mods == 0:
+        return 'default' if negative_mod_mask else None
+    if trigger_mods & _SHIFT_MASK:
+        return 'Shift+'
+    if trigger_mods & _CTRL_MASK:
+        return 'Ctrl+'
+    return zv.mod_mask_label(trigger_mods) + '+'
+
+
+def parse_vil_key_overrides(vil: dict) -> list[dict]:
+    """Parse the .vil key_override array into
+    [{trigger, replacement, layers, condition}, ...]. `trigger`/`replacement` are
+    the .vil qmk-id strings (trigger matches a cell via keycode_to_vial_string;
+    replacement is rendered by the QMK resolver)."""
+    out = []
+    for ko in vil.get('key_override') or []:
+        trig, repl = ko.get('trigger'), ko.get('replacement')
+        if not trig or trig == 'KC_NO' or not repl or repl == 'KC_NO':
+            continue
+        cond = _override_condition(int(ko.get('trigger_mods', 0)),
+                                   int(ko.get('negative_mod_mask', 0)))
+        if cond is None:
+            continue
+        out.append({'trigger': trig, 'replacement': repl,
+                    'layers': int(ko.get('layers', 0)), 'condition': cond})
+    return out
+
+
+def overrides_default_map(overrides: list[dict], num_layers: int) -> dict:
+    """{layer: {trigger_vialstring: replacement}} for 'default' (no-mod) overrides."""
+    m: dict[int, dict] = {}
+    for ko in overrides:
+        if ko['condition'] != 'default':
+            continue
+        for L in range(num_layers):
+            if ko['layers'] & (1 << L):
+                m.setdefault(L, {})[ko['trigger']] = ko['replacement']
+    return m
+
+
+def make_override_figures(vil_layout, matrix: list[tuple[int, int]], overrides: list[dict]):
+    """Return an extra_figures(layer_name, bindings) callable that yields, per layer,
+    a ('Key Override: <cond>', op_bindings) figure for each non-default condition
+    (Shift+, Ctrl+, then others), layer-scoped via each override's layers bitmask."""
+    conds = []
+    for ko in overrides:
+        if ko['condition'] != 'default' and ko['condition'] not in conds:
+            conds.append(ko['condition'])
+    conds.sort(key=lambda c: {'Shift+': 0, 'Ctrl+': 1}.get(c, 2))
+
+    def figures(layer_name, bindings):
+        m = re.match(r'Layer\s+(\d+)$', layer_name)
+        if not m:
+            return []
+        L = int(m.group(1))
+        rows = vil_layout[L]
+        result = []
+        for cond in conds:
+            repl_by_trigger = {ko['trigger']: ko['replacement'] for ko in overrides
+                               if ko['condition'] == cond and (ko['layers'] & (1 << L))}
+            if not repl_by_trigger:
+                continue
+            ob, assigned = [], False
+            for (r, c) in matrix:
+                try:
+                    vs = zv.keycode_to_vial_string(rows[r][c])
+                except (IndexError, TypeError):
+                    vs = None
+                if vs in repl_by_trigger:
+                    ob.append(repl_by_trigger[vs])
+                    assigned = True
+                else:
+                    ob.append('&none')
+            if assigned:
+                result.append((f'Key Override: {cond}', ob))
+        return result
+
+    return figures
 
 
 # ============================================================================
@@ -564,6 +662,7 @@ def main(argv=None) -> int:
     custom_labels, custom_by_int = _build_custom_maps(
         vial_json, Path(args.custom_keycodes) if args.custom_keycodes else None)
 
+    extra_figures = None  # per-layer Vial key-override figures (.vil path only)
     if fmt == 'keymap_c':
         # keymap.c may carry Shift-JIS comments (non-UTF-8); they are stripped
         # before parsing, so decode tolerantly rather than failing.
@@ -604,14 +703,19 @@ def main(argv=None) -> int:
             print('error: --format vil needs a matrix-indexed layout '
                   '(Vial vial.json / VIA via.json).', file=sys.stderr)
             return 1
+        overrides = parse_vil_key_overrides(vil)
+        default_map = overrides_default_map(overrides, len(vil_layout))
         layers_data = []
         for layer in range(len(vil_layout)):
-            bindings = build_vil_layer_bindings(vil_layout, layer, matrix, custom_by_int)
+            bindings = build_vil_layer_bindings(vil_layout, layer, matrix, custom_by_int,
+                                                default_overrides=default_map)
             if all(b in ('&trans', '&none') for b in bindings):
                 continue  # skip fully empty layers
             layers_data.append((f'Layer {layer}', bindings))
-        print(f'.vil: {len(vil_layout)} layers, variant {variant}, '
-              f'{len(matrix)} keys, {len(layers_data)} non-empty layers')
+        if overrides:
+            extra_figures = make_override_figures(vil_layout, matrix, overrides)
+        print(f'.vil: {len(vil_layout)} layers, variant {variant}, {len(matrix)} keys, '
+              f'{len(layers_data)} non-empty layers, {len(overrides)} key overrides')
 
     coords, labels, geom, unit, rowcol = five
     total = len(layers_data[0][1]) if layers_data else 0
@@ -638,7 +742,8 @@ def main(argv=None) -> int:
     out_path = Path(args.output)
     kd.write_html(layers_data, {}, {}, out_path, grid, display_cols, geom, unit,
                   resolver=qmk_resolver, title=args.title or out_path.stem,
-                  show_path=not args.no_path, path_key_px=args.path_key_px)
+                  show_path=not args.no_path, path_key_px=args.path_key_px,
+                  extra_figures=extra_figures)
     print(f'saved: {out_path}')
     return 0
 

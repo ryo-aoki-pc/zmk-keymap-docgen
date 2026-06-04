@@ -289,9 +289,13 @@ python vial_keymap_docgen.py path/to/KEYMAP.vil --format vil \
   each key's raw keycode (`MT(MOD_LCTL, KC_A)`, `LT(2, KC_SPACE)`, `TD(1)` …) is
   included by default. It is rendered at the layout key size (compact), since
   QMK tokens are short; pass `--no-path` to omit it, or `--path-key-px` to resize.
+* **Key overrides** — a `.vil`'s `key_override` entries (which `zmk_to_vial.py`
+  produces from ZMK mod-morphs) render like the ZMK mod-morph figures: a per-mod
+  `Key Override: Shift+` / `Key Override: Ctrl+` figure is added to each layer (in
+  both sections), and a carrier key's cap shows its no-modifier output.
 
-The ZMK path is unchanged — the new resolver/title/path parameters on
-`keymap_docgen.write_html` default to the existing behaviour (covered by a
+The ZMK path is unchanged — the new resolver/title/path/extra_figures parameters
+on `keymap_docgen.write_html` default to the existing behaviour (covered by a
 regression test).
 
 ## License

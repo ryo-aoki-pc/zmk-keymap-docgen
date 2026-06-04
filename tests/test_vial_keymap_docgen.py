@@ -224,6 +224,36 @@ def test_vial_main_path_section_default_and_no_path(tmp_path):
     assert '<h2>経路</h2>' not in out.read_text()
 
 
+def test_vil_key_overrides_parse_and_render():
+    # Carrier QK_KB+3 on layer 0: no-ctrl -> LCTL(KC_RIGHT); ctrl-held -> LCTL(KC_BSPACE).
+    carrier = zv.QK_KB + 3
+    vil = {
+        'layout': [[[carrier, zv.KC_NO]]],   # 1 layer, 1 row, 2 cols
+        'key_override': [
+            {'trigger': 'USER03', 'replacement': 'LCTL(KC_RIGHT)', 'layers': 1,
+             'trigger_mods': 0, 'negative_mod_mask': zv.MOD_MASK_LCTL},
+            {'trigger': 'USER03', 'replacement': 'LCTL(KC_BSPACE)', 'layers': 1,
+             'trigger_mods': zv.MOD_MASK_LCTL, 'negative_mod_mask': 0},
+        ],
+    }
+    ovr = v.parse_vil_key_overrides(vil)
+    assert sorted(o['condition'] for o in ovr) == ['Ctrl+', 'default']
+
+    # The no-mod (default) override replaces the opaque carrier on the cap.
+    dmap = v.overrides_default_map(ovr, 1)
+    matrix = [(0, 0), (0, 1)]
+    binds = v.build_vil_layer_bindings(vil['layout'], 0, matrix, {carrier: 'MM_X'},
+                                       default_overrides=dmap)
+    assert binds[0] == 'LCTL(KC_RIGHT)'
+
+    # The mod-held override becomes a separate "Key Override: Ctrl+" figure.
+    figs = v.make_override_figures(vil['layout'], matrix, ovr)('Layer 0', binds)
+    assert len(figs) == 1
+    caption, op_bindings = figs[0]
+    assert caption == 'Key Override: Ctrl+'
+    assert op_bindings == ['LCTL(KC_BSPACE)', '&none']
+
+
 def test_zmk_write_html_default_resolver_unchanged(tmp_path):
     raw = (REPO_ROOT / 'example/sample.keymap').read_text(encoding='utf-8')
     content = kd.expand_defines(kd.strip_comments(raw), kd.parse_defines(raw))
