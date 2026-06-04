@@ -1609,14 +1609,15 @@ def _html_extra_visual_layers(bindings: list[str], behaviors: dict,
 
 def _html_figure_table(layers_data: list[tuple[str, list[str]]],
                        behaviors: dict, macros: dict, geom, unit,
-                       mode: str = 'action', *, resolver=resolve) -> list[str]:
+                       mode: str = 'action', *, resolver=resolve,
+                       path_key_px: float = PATH_KEY_PX) -> list[str]:
     """Render every layer's visual figures as one big table: one row per layer,
     layer name in the left header cell, and ALL of that layer's figures (the main
     figure plus its Tap Dance / Mod Morph figures) stacked in the single right
     cell. `mode` selects the レイアウト図 (action faces, standard key size) or the
     経路 figures (resolution-path faces, double key size). Returns [] when no
     layer produces a figure."""
-    key_px = KEY_PX if mode == 'action' else PATH_KEY_PX
+    key_px = KEY_PX if mode == 'action' else path_key_px
     col_label = 'レイアウト図' if mode == 'action' else '経路'
     rows: list[str] = []
     for layer_name, bindings in layers_data:
@@ -1672,7 +1673,8 @@ _TABLE_FALLBACK_BULLETS = (
 def write_html(layers_data: list[tuple[str, list[str]]],
                behaviors: dict, macros: dict, output_path: Path,
                grid, display_cols, geom=None, unit=None,
-               *, resolver=resolve, title=None, show_path=True) -> None:
+               *, resolver=resolve, title=None, show_path=True,
+               path_key_px=PATH_KEY_PX) -> None:
     """Generate one standalone HTML file.
     Single layer  => H1 layer title, then H2 レイアウト図 / H2 経路.
     Multi layers  => H1 top title, H2 レイアウト図 (one row per layer), then H2 経路.
@@ -1688,7 +1690,8 @@ def write_html(layers_data: list[tuple[str, list[str]]],
     figure_table = _html_figure_table(layers_data, behaviors, macros, geom, unit,
                                       resolver=resolver)
     path_figures = _html_figure_table(layers_data, behaviors, macros, geom, unit,
-                                      mode='path', resolver=resolver)
+                                      mode='path', resolver=resolver,
+                                      path_key_px=path_key_px)
 
     if len(layers_data) == 1:
         layer_name, bindings = layers_data[0]

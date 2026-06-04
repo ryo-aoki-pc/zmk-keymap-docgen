@@ -542,10 +542,13 @@ def main(argv=None) -> int:
     p.add_argument('--layout-macro-name',
                    help='LAYOUT macro name in --layout-macro (default: the macro '
                         'used by the keymap.c).')
-    p.add_argument('--with-path', action='store_true',
-                   help='Also emit the 経路 (resolution-path) section. Off by '
-                        'default for QMK/Vial output (the raw keycode is in the '
-                        'tooltip) to keep the page compact.')
+    p.add_argument('--no-path', action='store_true',
+                   help='Omit the 経路 (resolution-path) section. It is included by '
+                        'default, like the ZMK KEYMAP.html.')
+    p.add_argument('--path-key-px', type=int, default=int(kd.KEY_PX),
+                   help='Key size (px) of the 経路 figures. Default %(default)s '
+                        '(= the layout key size: compact, since QMK keycode tokens '
+                        'are short). ZMK uses 104 (2x) for its long behaviour paths.')
     p.add_argument('--title', help='HTML page title / heading.')
     args = p.parse_args(argv)
 
@@ -635,7 +638,7 @@ def main(argv=None) -> int:
     out_path = Path(args.output)
     kd.write_html(layers_data, {}, {}, out_path, grid, display_cols, geom, unit,
                   resolver=qmk_resolver, title=args.title or out_path.stem,
-                  show_path=args.with_path)
+                  show_path=not args.no_path, path_key_px=args.path_key_px)
     print(f'saved: {out_path}')
     return 0
 

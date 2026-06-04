@@ -3,6 +3,8 @@
 Run with: python -m pytest tests/test_vial_keymap_docgen.py
 """
 
+import json
+import re
 import sys
 from pathlib import Path
 
@@ -191,6 +193,36 @@ def test_build_vil_layer_bindings_indexes_matrix():
 # --------------------------------------------------------------------------
 # ZMK regression guard: the new resolver default must not change ZMK output
 # --------------------------------------------------------------------------
+
+def test_path_key_px_scales_path_figure():
+    layers = [('L0', ['KC_A', 'KC_B'])]
+    coords, labels, geom, unit, rowcol = v.adapt_qmk_info_layout(
+        {'layouts': {'L': {'layout': [{'x': 0, 'y': 0}, {'x': 1, 'y': 0}]}}})
+    resolver = v.make_qmk_resolver()
+
+    def kb_width(pkpx):
+        html = '\n'.join(kd._html_figure_table(layers, {}, {}, geom, unit,
+                         mode='path', resolver=resolver, path_key_px=pkpx))
+        return float(re.search(r'class="kb path" style="width:([0-9.]+)px', html).group(1))
+
+    # 1x (compact) path figure is half the width of ZMK's 2x default.
+    assert kb_width(kd.KEY_PX) == pytest.approx(kb_width(kd.PATH_KEY_PX) / 2, rel=0.02)
+
+
+def test_vial_main_path_section_default_and_no_path(tmp_path):
+    kc = tmp_path / 'keymap.c'
+    kc.write_text('const uint16_t x[][1][1] = { [0] = LAYOUT(KC_A, KC_B) };')
+    layout = tmp_path / 'info.json'
+    layout.write_text(json.dumps(
+        {'layouts': {'LAYOUT': {'layout': [{'x': 0, 'y': 0}, {'x': 1, 'y': 0}]}}}))
+    out = tmp_path / 'out.html'
+    # 経路 included by default (like ZMK).
+    assert v.main([str(kc), '--layout', str(layout), '-o', str(out)]) == 0
+    assert '<h2>経路</h2>' in out.read_text()
+    # --no-path omits it.
+    assert v.main([str(kc), '--layout', str(layout), '-o', str(out), '--no-path']) == 0
+    assert '<h2>経路</h2>' not in out.read_text()
+
 
 def test_zmk_write_html_default_resolver_unchanged(tmp_path):
     raw = (REPO_ROOT / 'example/sample.keymap').read_text(encoding='utf-8')
