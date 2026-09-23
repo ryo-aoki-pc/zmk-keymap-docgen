@@ -619,6 +619,54 @@ class Resolved:
 
 
 # ============================================================================
+# Vial QMK settings (QSID -> C type)
+#
+# Must mirror qmk_settings_t / protos[] in vial-qmk quantum/qmk_settings.c.
+# qmk_settings_set() copies proto->sz bytes and returns -1 (silently, nothing
+# is written) when the caller's buffer is smaller than the setting, so the C
+# type emitted into the .inc has to match the firmware width.  Bit settings
+# (tapping_v2 bits) are transported as a uint8_t 0/1.
+# ============================================================================
+
+QMK_SETTINGS: dict[int, tuple[str, str]] = {   # qsid -> (C type, name)
+    1:  ('uint8_t',  'grave_esc_override'),
+    2:  ('uint16_t', 'combo_term'),
+    3:  ('uint8_t',  'auto_shift'),
+    4:  ('uint16_t', 'auto_shift_timeout'),
+    5:  ('uint8_t',  'osk_tap_toggle'),
+    6:  ('uint16_t', 'osk_timeout'),
+    7:  ('uint16_t', 'tapping_term'),
+    9:  ('uint16_t', 'mousekey_delay'),
+    10: ('uint16_t', 'mousekey_interval'),
+    11: ('uint16_t', 'mousekey_move_delta'),
+    12: ('uint16_t', 'mousekey_max_speed'),
+    13: ('uint16_t', 'mousekey_time_to_max'),
+    14: ('uint16_t', 'mousekey_wheel_delay'),
+    15: ('uint16_t', 'mousekey_wheel_interval'),
+    16: ('uint16_t', 'mousekey_wheel_max_speed'),
+    17: ('uint16_t', 'mousekey_wheel_time_to_max'),
+    18: ('uint16_t', 'tap_code_delay'),
+    19: ('uint16_t', 'tap_hold_caps_delay'),
+    20: ('uint8_t',  'tapping_toggle'),
+    21: ('uint32_t', 'magic'),
+    22: ('uint8_t',  'permissive_hold'),           # tapping_v2 bit
+    23: ('uint8_t',  'hold_on_other_key_press'),   # tapping_v2 bit
+    24: ('uint8_t',  'retro_tapping'),             # tapping_v2 bit
+    25: ('uint16_t', 'quick_tap_term'),
+    26: ('uint8_t',  'chordal_hold'),              # tapping_v2 bit
+    27: ('uint16_t', 'flow_tap_term'),
+}
+QMK_SETTING_BITS = {22, 23, 24, 26}
+QMK_SETTING_DEFAULT_CTYPE = 'uint8_t'
+C_TYPE_MAX = {'uint8_t': 0xFF, 'uint16_t': 0xFFFF, 'uint32_t': 0xFFFFFFFF}
+
+
+def qmk_setting_info(qsid: int) -> tuple[str, str]:
+    """(C type, name) for a QSID; unknown QSIDs fall back to uint8_t / ''."""
+    return QMK_SETTINGS.get(qsid, (QMK_SETTING_DEFAULT_CTYPE, ''))
+
+
+# ============================================================================
 # Mapping config
 # ============================================================================
 
@@ -631,7 +679,7 @@ DEFAULT_CONFIG = {
     'carrier_start': 3,            # first QK_KB_n index used for carriers
     'vial_uid': None,              # list of 8 bytes, or None
     'layout_options': -1,
-    'settings': {},                # QSID(str) -> value
+    'settings': {},                # QSID(str) -> value (C widths: QMK_SETTINGS)
     'tapping_term_ms': None,       # convenience: fills settings["7"] (mod-tap/layer-tap)
     'tap_dance_tapping_term_ms': None,  # per-tap-dance term; default = global tapping term
     'unmapped_keys': 'passthrough',  # or 'none'
@@ -652,10 +700,9 @@ def load_config(path: Path | None) -> dict:
         with open(path, encoding='utf-8') as f:
             user_cfg = json.load(f)
         config.update(user_cfg)
-    settings = {str(k): v for k, v in dict(config.get('settings') or {}).items()}
-    if config.get('tapping_term_ms') is not None:
-        settings.setdefault('7', int(config['tapping_term_ms']))
-    config['settings'] = settings
+    # tapping_term_ms is merged into settings["7"] by Converter._normalize_settings
+    # (after the QSID keys have been canonicalised)
+    config['settings'] = {str(k): v for k, v in dict(config.get('settings') or {}).items()}
     return config
 
 
@@ -712,17 +759,68 @@ class Converter:
         self._morph_cache: dict[str, MorphResult] = {}
         self._next_carrier = int(config.get('carrier_start', 3))
 
+        config['settings'] = self._normalize_settings(config)
         self.tapping_term = int(config['settings'].get('7', 200))
         # Tap dances carry their own term (Vial custom_tapping_term); ZMK's
         # tap-dance default is 200ms, independent of the mod-tap/layer-tap term.
         td_term = config.get('tap_dance_tapping_term_ms')
-        self.td_tapping_term = int(td_term) if td_term is not None else self.tapping_term
+        if td_term is not None:
+            # vial_tap_dance_entry_t.custom_tapping_term is uint16_t
+            if isinstance(td_term, bool) or not isinstance(td_term, int) or not 0 <= td_term <= 0xFFFF:
+                raise ConvertError(f'tap_dance_tapping_term_ms の値 {td_term!r} は 0〜65535 の整数である必要があります')
+        self.td_tapping_term = td_term if td_term is not None else self.tapping_term
 
     # ---- helpers ---------------------------------------------------------
 
     def warn(self, msg: str):
         if msg not in self.warnings:
             self.warnings.append(msg)
+
+    def _normalize_settings(self, config: dict) -> dict[str, int]:
+        """Validate the config's Vial QMK settings and canonicalise them to
+        {"<QSID>": int} (the .inc and the .vil are generated from this)."""
+        normalized: dict[str, int] = {}
+        for qsid, value in (config.get('settings') or {}).items():
+            try:
+                qsid_i = int(qsid)
+            except (TypeError, ValueError):
+                raise ConvertError(f'settings: QSID "{qsid}" が整数ではありません')
+            if qsid_i < 1:
+                raise ConvertError(f'settings: QSID {qsid_i} は 1 以上である必要があります')
+            # bool is an int subclass but "true" is not a valid QSID value
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise ConvertError(f'settings: QSID {qsid_i} の値 {value!r} は整数ではありません')
+            key = str(qsid_i)
+            if key in normalized:
+                raise ConvertError(f'settings: QSID {qsid_i} が重複しています')
+            normalized[key] = value
+            self._check_setting(qsid_i, value)
+        term = config.get('tapping_term_ms')
+        if term is not None:
+            if isinstance(term, bool) or not isinstance(term, int):
+                raise ConvertError(f'tapping_term_ms の値 {term!r} は整数ではありません')
+            if '7' in normalized and normalized['7'] != term:
+                raise ConvertError(f'settings: tapping_term_ms ({term}) と settings["7"] '
+                                   f'({normalized["7"]}) が矛盾しています')
+            if '7' not in normalized:
+                normalized['7'] = term
+                self._check_setting(7, term)
+        return normalized
+
+    def _check_setting(self, qsid_i: int, v: int) -> None:
+        """Reject a QSID / value that the firmware (bit settings) or the generated
+        C (value range) would not accept as intended; unknown QSIDs only warn."""
+        ctype, name = qmk_setting_info(qsid_i)
+        if qsid_i in QMK_SETTINGS:
+            label = f'QSID {qsid_i} ({name})'
+        else:
+            label = f'QSID {qsid_i}'
+            self.warn(f'settings: 未知の {label} は {ctype} として書き出します '
+                      f'(ファームウェアの quantum/qmk_settings.c で型幅を確認してください)')
+        if qsid_i in QMK_SETTING_BITS and v not in (0, 1):
+            raise ConvertError(f'settings: {label} はビット設定のため 0/1 を指定してください (指定値 {v})')
+        if not 0 <= v <= C_TYPE_MAX[ctype]:
+            raise ConvertError(f'settings: {label} の値 {v} は {ctype} の範囲外です')
 
     def _expand_cfg_key(self, key: str) -> str:
         """Apply the keymap's #define aliases to a config key like '&mo FUNC'."""
@@ -1459,7 +1557,7 @@ def emit_vil(conv: Converter) -> dict:
         'tap_dance': td_list,
         'combo': combo_list,
         'key_override': ko_list,
-        'settings': {str(k): v for k, v in (cfg.get('settings') or {}).items()},
+        'settings': {str(k): int(v) for k, v in (cfg.get('settings') or {}).items()},
     }
 
 
@@ -1480,20 +1578,27 @@ def emit_inc(conv: Converter, source_name: str) -> str:
     w(' * Integration in keymaps/vial/keymap.c:')
     w(' *   1. Near the top, forward-declare the auto-apply entry point:')
     w(' *        void zmk_keymap_apply_if_outdated(void);')
-    w(' *   2. At the END of keyboard_post_init_user(), call it:')
+    w(' *   2. Call it from keyboard_post_init_user() BEFORE the keymap reads')
+    w(' *      eeconfig_read_user() into any cached copy:')
     w(' *        zmk_keymap_apply_if_outdated();')
+    w(' *      The apply stamp lives in bits 8..31 of the user EEPROM word; a')
+    w(' *      stale cached copy written back later (eeconfig_update_user) would')
+    w(' *      revert it and make the next boot re-apply the defaults over the')
+    w(' *      user\'s Vial edits. The keymap\'s own user config must stay within')
+    w(' *      bits 0..7.')
     w(' *   3. At the end of the file, include this generated file:')
     w(' *        #include "zmk_keymap_defaults.inc"')
     w(' *')
-    w(' * zmk_keymap_apply_if_outdated() applies the bundled keymap once after')
-    w(' * flashing a firmware whose keymap differs from what is stored in EEPROM')
-    w(' * (so flashing alone applies it — no manual EEPROM reset or .vil load')
-    w(' * needed), while preserving the user\'s later Vial edits across reboots of')
-    w(' * the same firmware. eeconfig_init_user() covers the EEPROM-reset path.')
+    w(' * zmk_keymap_apply_if_outdated() applies the bundled keymap on the first')
+    w(' * boot of every flashed build and whenever the keymap content changed (so')
+    w(' * flashing alone applies it — no manual EEPROM reset or .vil load needed),')
+    w(' * while preserving the user\'s later Vial edits across reboots of the same')
+    w(' * build. eeconfig_init_user() covers the EEPROM-reset path.')
     w(' */')
     w('')
     w('#include "dynamic_keymap.h"')
     w('#include "eeconfig.h"')
+    w('#include "version.h" /* BUILD_ID (vial-qmk: per-build VIA EEPROM magic) */')
     w('#include "vial.h"')
     w('#ifdef QMK_SETTINGS')
     w('#    include "qmk_settings.h"')
@@ -1587,12 +1692,25 @@ def emit_inc(conv: Converter, source_name: str) -> str:
     )).encode('utf-8')
     version = int.from_bytes(hashlib.sha256(blob).digest()[:2], 'big')
 
-    w(f'/* Content hash of the bundled keymap. Stored in the high 16 bits of the')
-    w(f' * user EEPROM word so that flashing a firmware with a *changed* keymap')
-    w(f' * re-applies it on the next boot (see zmk_keymap_apply_if_outdated). */')
+    w('/* Content hash of the bundled keymap (see ZMK_KEYMAP_STAMP). */')
     w(f'#define ZMK_KEYMAP_VERSION 0x{version:04X}u')
-    w('#define ZMK_KEYMAP_VERSION_SHIFT 16')
-    w('#define ZMK_KEYMAP_VERSION_MASK 0xFFFFu')
+    w('')
+    w('/* On vial-qmk the VIA EEPROM magic is BUILD_ID (random 24-bit value per')
+    w(' * build, see util/build_id.py), so the first boot of every new build runs')
+    w(' * eeconfig_init_via() -> dynamic_keymap_reset() -> qmk_settings_reset()')
+    w(' * without touching the user EEPROM word. The stamp stored in bits 8..31 of')
+    w(' * that word therefore mixes the keymap hash with the whole BUILD_ID: a')
+    w(' * rebuilt firmware (new BUILD_ID) or a changed keymap (new hash) re-applies')
+    w(' * the bundled keymap on its first boot, while reboots of the same build')
+    w(' * keep the user\'s later Vial edits. The keymap\'s own user config must')
+    w(' * stay within bits 0..7. */')
+    w('#ifndef BUILD_ID')
+    w('#    define BUILD_ID 0u /* not vial-qmk: the VIA region is not reset per build */')
+    w('#endif')
+    w('#define ZMK_KEYMAP_STAMP_SHIFT 8')
+    w('#define ZMK_KEYMAP_STAMP_MASK 0xFFFFFFu')
+    w('#define ZMK_KEYMAP_STAMP \\')
+    w('    (((uint32_t)ZMK_KEYMAP_VERSION ^ (uint32_t)BUILD_ID) & ZMK_KEYMAP_STAMP_MASK)')
     w('')
 
     # --- apply function (writes all defaults to EEPROM) ---
@@ -1624,16 +1742,16 @@ def emit_inc(conv: Converter, source_name: str) -> str:
     w('')
     if settings:
         w('#ifdef QMK_SETTINGS')
-        w('    /* QMK settings (tapping term etc.) */')
+        w('    /* QMK settings (Vial QSID -> value). The C types follow qmk_settings_t')
+        w('     * in quantum/qmk_settings.c: qmk_settings_set() silently rejects a')
+        w('     * buffer smaller than the setting. */')
         w('    {')
         for qsid, value in sorted(settings.items(), key=lambda kv: int(kv[0])):
             qsid_i = int(qsid)
-            if qsid_i == 7:
-                w(f'        uint16_t tapping_term = {int(value)};')
-                w('        qmk_settings_set(7, &tapping_term, sizeof(tapping_term));')
-            else:
-                w(f'        uint8_t qs_{qsid_i} = {int(value)};')
-                w(f'        qmk_settings_set({qsid_i}, &qs_{qsid_i}, sizeof(qs_{qsid_i}));')
+            ctype, name = qmk_setting_info(qsid_i)
+            comment = f'  /* {name} */' if name else ''
+            w(f'        {ctype} qs_{qsid_i} = {int(value)};{comment}')
+            w(f'        qmk_settings_set({qsid_i}, &qs_{qsid_i}, sizeof(qs_{qsid_i}));')
         w('    }')
         w('#endif')
         w('')
@@ -1642,28 +1760,34 @@ def emit_inc(conv: Converter, source_name: str) -> str:
     w('}')
     w('')
 
-    # --- eeconfig_init_user: runs on EEPROM reset ---
-    w('void eeconfig_init_user(void) {')
-    w('    /* Runs when the EEPROM is (re)initialised. Apply the bundled keymap')
-    w('     * and stamp its version (the low bits stay 0 = the keyboard\'s own')
-    w('     * user_config default, matching QMK\'s weak eeconfig_init_user). */')
-    w('    zmk_apply_keymap_defaults();')
-    w('    eeconfig_update_user((uint32_t)ZMK_KEYMAP_VERSION << ZMK_KEYMAP_VERSION_SHIFT);')
+    # --- stamp helper ---
+    w('static void zmk_keymap_write_stamp(uint32_t raw) {')
+    w('    raw = (raw & ~(ZMK_KEYMAP_STAMP_MASK << ZMK_KEYMAP_STAMP_SHIFT))')
+    w('          | (ZMK_KEYMAP_STAMP << ZMK_KEYMAP_STAMP_SHIFT);')
+    w('    eeconfig_update_user(raw);')
     w('}')
     w('')
 
-    # --- version-checked auto-apply (call from keyboard_post_init_user) ---
-    w('/* Call once from keyboard_post_init_user(). Applies the bundled keymap')
-    w(' * the first time a firmware with this keymap version boots (so flashing')
-    w(' * applies it without a manual EEPROM reset), and preserves the user\'s')
-    w(' * later Vial edits on subsequent boots of the same version. */')
+    # --- eeconfig_init_user: runs on EEPROM reset ---
+    w('void eeconfig_init_user(void) {')
+    w('    /* Runs when the EEPROM is (re)initialised. Apply the bundled keymap')
+    w('     * and stamp it (the low bits stay 0 = the keyboard\'s own user_config')
+    w('     * default, matching QMK\'s weak eeconfig_init_user). */')
+    w('    zmk_apply_keymap_defaults();')
+    w('    zmk_keymap_write_stamp(0);')
+    w('}')
+    w('')
+
+    # --- stamp-checked auto-apply (call from keyboard_post_init_user) ---
+    w('/* Call once from keyboard_post_init_user(). Applies the bundled keymap on')
+    w(' * the first boot of this build (vial-qmk resets the VIA EEPROM region per')
+    w(' * build) and after a keymap change, and preserves the user\'s later Vial')
+    w(' * edits on subsequent boots of the same build. */')
     w('void zmk_keymap_apply_if_outdated(void) {')
     w('    uint32_t raw = eeconfig_read_user();')
-    w('    if (((raw >> ZMK_KEYMAP_VERSION_SHIFT) & ZMK_KEYMAP_VERSION_MASK) != ZMK_KEYMAP_VERSION) {')
+    w('    if (((raw >> ZMK_KEYMAP_STAMP_SHIFT) & ZMK_KEYMAP_STAMP_MASK) != ZMK_KEYMAP_STAMP) {')
     w('        zmk_apply_keymap_defaults();')
-    w('        raw = (raw & ~((uint32_t)ZMK_KEYMAP_VERSION_MASK << ZMK_KEYMAP_VERSION_SHIFT))')
-    w('              | ((uint32_t)ZMK_KEYMAP_VERSION << ZMK_KEYMAP_VERSION_SHIFT);')
-    w('        eeconfig_update_user(raw);')
+    w('        zmk_keymap_write_stamp(raw);')
     w('    }')
     w('}')
     w('')
@@ -1777,6 +1901,17 @@ def emit_report(conv: Converter, source_name: str) -> str:
         w('```')
         w('')
 
+    settings = conv.config.get('settings') or {}
+    if settings:
+        w('## QMK settings (Vial)')
+        w('')
+        w('| QSID | 設定 | 値 | C 型 |')
+        w('|---|---|---|---|')
+        for qsid, value in sorted(settings.items(), key=lambda kv: int(kv[0])):
+            ctype, name = qmk_setting_info(int(qsid))
+            w(f'| {qsid} | {name or "(不明)"} | {value} | {ctype} |')
+        w('')
+
     w('## リソース使用量')
     w('')
     w('| リソース | 使用 | 上限 |')
@@ -1804,11 +1939,19 @@ def emit_report(conv: Converter, source_name: str) -> str:
     w('生成された `.inc` を vial-qmk の')
     w('`keyboards/sekigon/keyboard_quantizer/mini/keymaps/vial/` に配置し、keymap.c に組み込みます')
     w('(`.inc` 冒頭のコメント参照: ① `void zmk_keymap_apply_if_outdated(void);` を前方宣言、')
-    w('② `keyboard_post_init_user()` の末尾で呼び出し、③ ファイル末尾で `#include`)。')
+    w('② `keyboard_post_init_user()` 内で、キーマップが `eeconfig_read_user()` をキャッシュする')
+    w('**前に** 呼び出し (スタンプは user word の bit 8..31 にあり、古いキャッシュを書き戻すと')
+    w('スタンプが戻って次回起動で同梱キーマップが Vial 編集を上書きしてしまう)、')
+    w('③ ファイル末尾で `#include`)。')
     w('')
-    w('**ビルドして書き込むだけで**、レイヤー・マクロ・タップダンス・**キーオーバーライド**を')
-    w('含む全設定が次回起動時に EEPROM へ自動適用されます (キーマップ内容のハッシュを保存し、')
-    w('変更を検出したときだけ適用するため、その後の Vial 編集は保持されます)。')
+    w('**ビルドして書き込むだけで**、レイヤー・マクロ・タップダンス・**キーオーバーライド**・')
+    w('QMK settings を含む全設定が初回起動時に EEPROM へ自動適用されます (キーマップ内容の')
+    w('ハッシュとビルド ID をスタンプとして保存し、書き込んだビルドの初回起動時とキーマップ変更時')
+    w('だけ適用するため、同じビルドの再起動では Vial 編集が保持されます。vial-qmk は新しいビルドの')
+    w('初回起動で VIA 領域をリセットするため、ビルド ID を含めないと再ビルド後に設定が消えます)。')
+    w('Vial GUI の「QMK Settings → Reset」や「Reset keymap」はユーザー操作として尊重され')
+    w('(VIA 領域だけが既定値に戻りスタンプは残るため) 再適用されません。同梱状態に戻すには')
+    w('EEPROM リセット (`EE_CLR` など、`eeconfig_init_user()` 経由) を行ってください。')
     w('vial-gui の取り込み経路を通らないため、GUI のバージョン差異の影響も受けません。')
     w('')
     w('### 方法B: Vial GUI で .vil を読み込む')

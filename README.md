@@ -166,7 +166,7 @@ It reuses this repo's ZMK parser and emits three files:
 | output | purpose |
 |--------|---------|
 | `<name>.vil` | Load into the Vial GUI (`File → Load saved layout...`) — writes layers, macros, tap dances and key overrides to the keyboard. Keycodes are emitted as integers, which the GUI accepts regardless of its keycode-name set. |
-| `<name>_vial_defaults.inc` | C include for vial-qmk. `#include` it at the end of the Quantizer's `keymaps/vial/keymap.c` to apply the same configuration as EEPROM defaults on every EEPROM (re)initialisation. |
+| `<name>_vial_defaults.inc` | C include for vial-qmk. `#include` it at the end of the Quantizer's `keymaps/vial/keymap.c` to apply the same configuration as EEPROM defaults — on EEPROM (re)initialisation and on the first boot of every flashed build (vial-qmk resets the VIA region per build) or after a keymap change, keeping later Vial edits otherwise. |
 | `<name>_vial_report.md` | Human-readable conversion report: key placement, macro/tap-dance/key-override tables, carrier assignments and warnings. |
 
 ### How the conversion works
@@ -229,11 +229,38 @@ python zmk_to_vial.py config/MyBoard.keymap -m tools/MyBoard.vialmap.json \
   "carrier_start": 3,                    // first QK_KB_n used as a carrier
   "vial_uid": ["0x05", "0xE4", "..."],  // VIAL_KEYBOARD_UID of the firmware
   "layout_options": 0,
-  "tapping_term_ms": 150,                // → QMK settings QSID 7
-  "settings": { "22": 1 },               // extra QMK settings (22 = permissive hold)
+  "tapping_term_ms": 150,                // → QMK settings QSID 7 (tapping_term)
+  // extra QMK settings ("<QSID>": value). Only the QSIDs listed here are
+  // written by the .inc / .vil; anything else is left untouched (the firmware
+  // default, or whatever was last set in Vial), so pin every setting that
+  // must be deterministic.
+  "settings": { "22": 1, "23": 0, "24": 0, "25": 0, "26": 0, "27": 0 },
   "unmapped_keys": "passthrough"         // or "none"
 }
 ```
+
+#### ZMK hold-tap properties → Vial QMK settings
+
+The `&mt` / `&lt` behaviour properties of the ZMK keymap have no direct
+counterpart in the keymap itself; they are expressed through Vial's QMK
+settings (QSID → value) in the mapping config:
+
+| ZMK `&mt` / `&lt` property | QSID (setting) | value |
+|---|---|---|
+| `tapping-term-ms = <N>` | 7 `tapping_term` (or `tapping_term_ms`) | N |
+| `flavor = "balanced"` | 22 `permissive_hold` / 23 `hold_on_other_key_press` | 1 / 0 |
+| `flavor = "hold-preferred"` | 22 / 23 | 0 / 1 |
+| `flavor = "tap-preferred"` | 22 / 23 | 0 / 0 |
+| `quick-tap-ms = <0>` (or unset) | 25 `quick_tap_term` | 0 (the firmware default is `TAPPING_TERM`, i.e. tap-then-hold repeats the key) |
+| `retro-tap` | 24 `retro_tapping` | 1 / 0 |
+| `hold-trigger-key-positions` | 26 `chordal_hold` | approximation only (opposite-hand rule) |
+| `require-prior-idle-ms = <N>` | 27 `flow_tap_term` | approximation only: N (0 = off) — vial-qmk's flow tap applies only when both the tap keycode and the previous key are letters / Space / `.` `,` `;` `/` and no Ctrl/GUI/Alt is held, whereas ZMK counts any preceding key press |
+
+The C types written into the `.inc` follow vial-qmk's `qmk_settings_t`
+(`QMK_SETTINGS` table in `zmk_to_vial.py`: 2 / 4 / 6 / 7 / 9–19 / 25 / 27 are
+16-bit, 22 / 23 / 24 / 26 are 0/1 bits, 21 is 32-bit). This matters because
+`qmk_settings_set()` silently rejects a value handed over in a buffer smaller
+than the setting. Unknown QSIDs are emitted as `uint8_t` with a warning.
 
 ### Known limitations
 
@@ -245,7 +272,7 @@ python zmk_to_vial.py config/MyBoard.keymap -m tools/MyBoard.vialmap.json \
 * The firmware-side feature set assumed here matches
   [vial-qmk-kq-mini](https://github.com/ryo-aoki-pc/vial-qmk-kq-mini)
   (key overrides may fire Vial macros; key-override layer matching uses the
-  active top layer).
+  active top layer; QMK settings widths follow its `quantum/qmk_settings.c`).
 
 ### Tests
 
