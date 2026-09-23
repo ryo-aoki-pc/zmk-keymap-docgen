@@ -44,11 +44,8 @@ def make_keymap(tmp_path: Path, body: str) -> Path:
 def make_config(tmp_path: Path, **overrides) -> dict:
     config = load_config(None)
     config.update(overrides)
-    # mirror load_config's convenience fill (tapping_term_ms -> settings["7"])
-    settings = {str(k): v for k, v in dict(config.get('settings') or {}).items()}
-    if config.get('tapping_term_ms') is not None:
-        settings.setdefault('7', int(config['tapping_term_ms']))
-    config['settings'] = settings
+    # tapping_term_ms -> settings["7"] is merged by Converter._normalize_settings
+    config['settings'] = {str(k): v for k, v in dict(config.get('settings') or {}).items()}
     return config
 
 
@@ -283,6 +280,15 @@ class TestSampleKeymap:
         # version-checked auto-apply entry point + a concrete version constant
         assert 'void zmk_keymap_apply_if_outdated(void)' in inc
         assert re.search(r'#define ZMK_KEYMAP_VERSION 0x[0-9A-F]{4}u', inc)
+        # the apply stamp mixes in vial-qmk's per-build BUILD_ID (the VIA EEPROM
+        # magic), so a rebuilt firmware re-applies the keymap after the reset
+        assert '#include "version.h"' in inc
+        assert '#ifndef BUILD_ID' in inc
+        assert '#define ZMK_KEYMAP_STAMP_SHIFT 8' in inc
+        assert '#define ZMK_KEYMAP_STAMP_MASK 0xFFFFFFu' in inc
+        assert '#define ZMK_KEYMAP_STAMP' in inc
+        assert '!= ZMK_KEYMAP_STAMP' in inc
+        assert 'BEFORE the keymap reads' in inc
         assert 'eeconfig_read_user()' in inc
         assert 'eeconfig_update_user(' in inc
         assert 'dynamic_keymap_set_keycode' in inc
@@ -374,6 +380,122 @@ class TestTapDanceTerm:
         assert vil['tap_dance'][0][4] == 200
         assert '200}' in emit_inc(conv, 'x.keymap')
 
+
+
+class TestQmkSettings:
+    """Vial QMK settings (QSID) emission: the C types written into the .inc
+    must match the firmware's qmk_settings_t widths, otherwise
+    qmk_settings_set() silently rejects the value."""
+
+    LAYERS = 'DEFAULT { bindings = <&kp Q &mt LCTRL A>; };'
+
+    def _conv(self, tmp_path, **cfg):
+        keymap = make_keymap(tmp_path, KEYMAP_TEMPLATE.format(
+            macros='', behaviors='', layers=self.LAYERS))
+        return Converter(keymap, make_config(tmp_path, **cfg)).convert()
+
+    def test_width_table_matches_firmware(self):
+        assert z.QMK_SETTINGS[7][0] == 'uint16_t'       # tapping_term
+        assert z.QMK_SETTINGS[21][0] == 'uint32_t'      # magic
+        assert z.QMK_SETTINGS[25][0] == 'uint16_t'      # quick_tap_term
+        assert z.QMK_SETTINGS[27][0] == 'uint16_t'      # flow_tap_term
+        assert all(z.QMK_SETTINGS[q][0] == 'uint8_t' for q in z.QMK_SETTING_BITS)
+
+    def test_inc_uses_firmware_widths(self, tmp_path):
+        conv = self._conv(tmp_path, tapping_term_ms=150,
+                          settings={'22': 1, '25': 0, '27': 0})
+        inc = emit_inc(conv, 'x.keymap')
+        assert 'uint16_t qs_7 = 150;' in inc
+        assert 'uint8_t qs_22 = 1;' in inc
+        assert 'uint16_t qs_25 = 0;' in inc
+        assert 'uint16_t qs_27 = 0;' in inc
+        assert 'qmk_settings_set(25, &qs_25, sizeof(qs_25));' in inc
+        assert 'uint8_t qs_25' not in inc
+        assert conv.warnings == []
+
+    def test_unknown_qsid_defaults_to_u8_with_warning(self, tmp_path):
+        conv = self._conv(tmp_path, settings={'99': 1})
+        assert 'uint8_t qs_99 = 1;' in emit_inc(conv, 'x.keymap')
+        assert any('99' in w for w in conv.warnings)
+
+    def test_bit_setting_not_0_or_1_raises(self, tmp_path):
+        # eeprom_settings_setbit() would silently store (2 & 1) == 0
+        with pytest.raises(ConvertError):
+            self._conv(tmp_path, settings={'22': 2})
+
+    @pytest.mark.parametrize('settings', [{'20': 300}, {'21': 2 ** 32}, {'99': 300}, {'7': -1}])
+    def test_value_out_of_type_range_raises(self, tmp_path, settings):
+        # the emitted initialiser would overflow its C type (-Werror in QMK builds)
+        with pytest.raises(ConvertError):
+            self._conv(tmp_path, settings=settings)
+
+    @pytest.mark.parametrize('value', ['zero', '0', 150.5, True])
+    def test_non_integer_value_raises(self, tmp_path, value):
+        # the .vil must carry ints (vial-gui asserts isinstance(int)), so the
+        # config is rejected instead of being silently normalised
+        with pytest.raises(ConvertError):
+            self._conv(tmp_path, settings={'25': value})
+
+    def test_duplicate_qsid_raises(self, tmp_path):
+        with pytest.raises(ConvertError):
+            self._conv(tmp_path, settings={'7': 150, '07': 200})
+
+    def test_non_positive_qsid_raises(self, tmp_path):
+        with pytest.raises(ConvertError):
+            self._conv(tmp_path, settings={'-3': 1})
+        with pytest.raises(ConvertError):
+            self._conv(tmp_path, settings={'x': 1})
+
+    def test_tapping_term_conflict_raises(self, tmp_path):
+        with pytest.raises(ConvertError):
+            self._conv(tmp_path, tapping_term_ms=150, settings={'7': 200})
+        with pytest.raises(ConvertError):
+            self._conv(tmp_path, tapping_term_ms=150, settings={'07': 200})
+        # identical values are not a conflict, whatever the spelling of the key
+        for key in ('7', '07'):
+            conv = self._conv(tmp_path, tapping_term_ms=150, settings={key: 150})
+            assert conv.tapping_term == 150
+            assert conv.config['settings'] == {'7': 150}
+
+    def test_tapping_term_ms_alone_fills_qsid_7(self, tmp_path):
+        conv = self._conv(tmp_path, tapping_term_ms=150)
+        assert conv.config['settings'] == {'7': 150}
+        assert 'uint16_t qs_7 = 150;' in emit_inc(conv, 'x.keymap')
+
+    def test_settings_are_canonicalised(self, tmp_path):
+        conv = self._conv(tmp_path, settings={'025': 0})
+        assert conv.config['settings'] == {'25': 0}
+        assert 'uint16_t qs_25 = 0;' in emit_inc(conv, 'x.keymap')
+        assert emit_vil(conv)['settings'] == {'25': 0}
+
+    def test_vil_settings_passthrough(self, tmp_path):
+        conv = self._conv(tmp_path, tapping_term_ms=150, settings={'25': 0})
+        assert emit_vil(conv)['settings'] == {'7': 150, '25': 0}
+
+    def test_inc_version_changes_with_settings(self, tmp_path):
+        def version_of(c):
+            return re.search(r'ZMK_KEYMAP_VERSION (0x[0-9A-F]{4})u',
+                             emit_inc(c, 'x.keymap')).group(1)
+        v1 = version_of(self._conv(tmp_path, tapping_term_ms=150))
+        v2 = version_of(self._conv(tmp_path, tapping_term_ms=150, settings={'25': 0}))
+        assert v1 != v2
+
+    def test_report_lists_settings(self, tmp_path):
+        report = emit_report(self._conv(tmp_path, settings={'25': 0}), 'x.keymap')
+        assert '## QMK settings' in report
+        assert 'quick_tap_term' in report
+
+    def test_report_integration_step_matches_inc_header(self, tmp_path):
+        # the report must not prescribe the stale-cache ordering the .inc forbids
+        report = emit_report(self._conv(tmp_path), 'x.keymap')
+        assert 'キャッシュする' in report and '**前に** 呼び出し' in report
+        assert '末尾で呼び出し' not in report
+
+    @pytest.mark.parametrize('value', [70000, -5, 'abc', 150.5, True])
+    def test_tap_dance_term_validated(self, tmp_path, value):
+        # written verbatim into uint16_t custom_tapping_term initialisers
+        with pytest.raises(ConvertError):
+            self._conv(tmp_path, tap_dance_tapping_term_ms=value)
 
 class TestModMorphCases:
     def _convert(self, tmp_path, macros='', behaviors='', layers='', **cfg):
