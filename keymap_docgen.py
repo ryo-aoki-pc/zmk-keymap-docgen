@@ -45,11 +45,13 @@ Examples:
 """
 
 import argparse
+import datetime
 import json
 import re
 import statistics
 import sys
 import unicodedata
+import zipfile
 from collections import Counter
 from pathlib import Path
 
@@ -930,6 +932,59 @@ def _write_mode_sheet(ws, layers_data: list[tuple[str, list[str]]],
             r += 1
 
 
+# .xlsx を決定的に出力するための固定タイムスタンプ。
+# openpyxl は保存のたびに現在時刻を docProps/core.xml と zip エントリに書き込むため、
+# 内容が同じでもバイト列が変わり、CI の自動再生成が毎回コミットを作ってしまう。
+_XLSX_EPOCH = datetime.datetime(1980, 1, 1, 0, 0, 0)
+_XLSX_EPOCH_W3CDTF = '1980-01-01T00:00:00Z'
+_XLSX_ZIP_DATE_TIME = (1980, 1, 1, 0, 0, 0)
+_XLSX_CORE_PROPS = 'docProps/core.xml'
+_XLSX_TIMESTAMP_RE = re.compile(
+    rb'(<dcterms:(?:created|modified)[^>]*>)[^<]*(</dcterms:(?:created|modified)>)')
+
+
+def _pin_core_properties(data: bytes) -> bytes:
+    """Replace the created/modified timestamps in docProps/core.xml.
+
+    Setting wb.properties.modified before save() is not enough: openpyxl's
+    writer overwrites it with the current time on every save.
+    """
+    return _XLSX_TIMESTAMP_RE.sub(
+        rb'\g<1>' + _XLSX_EPOCH_W3CDTF.encode() + rb'\g<2>', data)
+
+
+def _save_workbook_deterministic(wb, output_path: Path) -> None:
+    """Save the workbook so that identical content yields identical bytes.
+
+    openpyxl stamps the current time into docProps/core.xml and into every zip
+    entry header. Both are pinned here, so that regenerating unchanged docs
+    produces no diff and the CI auto-regeneration job stays a no-op.
+    """
+    wb.properties.created = _XLSX_EPOCH
+    wb.properties.modified = _XLSX_EPOCH
+    wb.save(output_path)
+
+    output_path = Path(output_path)
+    with zipfile.ZipFile(output_path) as src:
+        entries = []
+        for info in src.infolist():
+            data = src.read(info.filename)
+            if info.filename == _XLSX_CORE_PROPS:
+                data = _pin_core_properties(data)
+            entries.append((info, data))
+
+    tmp_path = output_path.with_name(output_path.name + '.tmp')
+    with zipfile.ZipFile(tmp_path, 'w', zipfile.ZIP_DEFLATED) as dst:
+        for info, data in entries:
+            pinned = zipfile.ZipInfo(info.filename, _XLSX_ZIP_DATE_TIME)
+            pinned.compress_type = info.compress_type
+            pinned.external_attr = info.external_attr
+            pinned.internal_attr = info.internal_attr
+            pinned.create_system = info.create_system
+            dst.writestr(pinned, data)
+    tmp_path.replace(output_path)
+
+
 def write_excel(layers_data: list[tuple[str, list[str]]],
                 behaviors: dict, macros: dict, output_path: Path,
                 grid, display_cols) -> None:
@@ -949,7 +1004,7 @@ def write_excel(layers_data: list[tuple[str, list[str]]],
             ws = wb.create_sheet(sheet_name)
         _write_mode_sheet(ws, layers_data, behaviors, macros, mode,
                           grid, display_cols, active_indices, is_single)
-    wb.save(output_path)
+    _save_workbook_deterministic(wb, output_path)
 
 
 # ============================================================================
