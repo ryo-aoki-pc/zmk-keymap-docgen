@@ -39,6 +39,25 @@ def test_parse_keyball_layer_yields_42_tokens():
         assert len(toks) == 42
 
 
+def test_parse_ignores_subscript_assignments_outside_keymaps():
+    # A VIA handler after the keymaps array: `v[3] = f();` must not become layer 3
+    text = """
+const uint16_t PROGMEM keymaps[][MATRIX_ROWS][MATRIX_COLS] = {
+  [0] = LAYOUT_universal(KC_A, KC_B, MO(1)),
+  [1] = LAYOUT_universal(KC_1, _______, XXXXXXX),
+};
+void via_custom_value_command_kb(uint8_t *data, uint8_t length) {
+    uint8_t *v = &data[3];
+    v[3] = keyball_get_cpi();
+    v[13] = get_auto_mouse_debounce();
+}
+"""
+    layers = v.parse_qmk_keymap_c(text)
+    assert [name for name, _ in layers] == ['Layer 0', 'Layer 1']
+    assert layers[1][1] == ['KC_1', '&trans', '&none']
+    assert v.detect_layout_macro_name(text) == 'LAYOUT_universal'
+
+
 def test_norm_token_sentinels():
     body = "KC_A, _______, XXXXXXX, KC_TRNS, KC_NO"
     layers = v.parse_qmk_keymap_c("const x[][1][1] = { [0] = LAYOUT(" + body + ") };")

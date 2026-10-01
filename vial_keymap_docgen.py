@@ -316,11 +316,34 @@ def _extract_paren_body(text: str, open_idx: int) -> tuple[str, int]:
     raise ValueError('unbalanced parentheses in keymap.c LAYOUT(...)')
 
 
+_KEYMAPS_DECL_RE = re.compile(r'\bkeymaps\s*(?:\[[^\]]*\]\s*)+=\s*\{')
+
+
+def _keymaps_region(text: str) -> str:
+    """The body of the `keymaps[][MATRIX_ROWS][MATRIX_COLS] = { ... }` array, or
+    the whole text when there is no such declaration. Other code in keymap.c
+    (e.g. `v[3] = get_value();` in a VIA handler) looks like `[n] = NAME(` too,
+    so the layers must only be read from inside the array."""
+    m = _KEYMAPS_DECL_RE.search(text)
+    if not m:
+        return text
+    open_idx = m.end() - 1
+    depth = 0
+    for i in range(open_idx, len(text)):
+        if text[i] == '{':
+            depth += 1
+        elif text[i] == '}':
+            depth -= 1
+            if depth == 0:
+                return text[open_idx + 1:i]
+    raise ValueError('unbalanced braces in keymap.c keymaps[] array')
+
+
 def parse_qmk_keymap_c(text: str) -> list[tuple[str, list[str]]]:
     """Parse `[n] = LAYOUT_xxx(tok, tok, ...)` blocks into
     [(layer_name, [token,...]), ...] in layer-index order. Transparent / no-op
     tokens are normalised to the '&trans' / '&none' sentinels."""
-    text = kd.strip_comments(text)
+    text = _keymaps_region(kd.strip_comments(text))
     layers: dict[int, list[str]] = {}
     for m in re.finditer(r'\[(\d+)\]\s*=\s*[A-Za-z_]\w*\s*\(', text):
         idx = int(m.group(1))
@@ -343,7 +366,7 @@ def _norm_token(tok: str) -> str:
 
 def detect_layout_macro_name(text: str) -> str | None:
     """The LAYOUT macro name used by the keymap (`[0] = LAYOUT_xxx(...)`)."""
-    m = re.search(r'\[\d+\]\s*=\s*([A-Za-z_]\w*)\s*\(', kd.strip_comments(text))
+    m = re.search(r'\[\d+\]\s*=\s*([A-Za-z_]\w*)\s*\(', _keymaps_region(kd.strip_comments(text)))
     return m.group(1) if m else None
 
 
