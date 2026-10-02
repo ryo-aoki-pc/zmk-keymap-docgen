@@ -81,8 +81,10 @@ QMK_BASIC_LABELS = {
     'LALT': 'LAlt', 'LEFT_ALT': 'LAlt', 'RALT': 'RAlt', 'RIGHT_ALT': 'RAlt',
     'LGUI': 'LWin', 'LEFT_GUI': 'LWin', 'RGUI': 'RWin', 'RIGHT_GUI': 'RWin',
     # mouse buttons
+    # (QMK 0.26+ names them MS_BTN1 …; the KC_BTN1 aliases were removed in 0.30)
     'BTN1': '🖱左', 'MS_BTN1': '🖱左', 'BTN2': '🖱右', 'MS_BTN2': '🖱右',
-    'BTN3': '🖱中', 'MS_BTN3': '🖱中', 'BTN4': '🖱4', 'BTN5': '🖱5',
+    'BTN3': '🖱中', 'MS_BTN3': '🖱中', 'BTN4': '🖱4', 'MS_BTN4': '🖱4',
+    'BTN5': '🖱5', 'MS_BTN5': '🖱5',
 }
 
 # Mod-tap modifier constant -> label (for MT(MOD_x | MOD_y, kc)).
@@ -258,6 +260,9 @@ def make_qmk_resolver(layer_names=None, custom_labels=None,
             return ('REBOOT', '')
         if b.startswith('KC_') or re.fullmatch(r'[A-Z0-9]', b):
             return (qmk_basic_label(b), '')
+        # QMK 0.26+ mouse keycodes (MS_BTN1 …) have no KC_ prefix
+        if b.startswith('MS_') and b in QMK_BASIC_LABELS:
+            return (QMK_BASIC_LABELS[b], '')
         # Custom / unknown enum keycode: show its name (never crash — R2).
         return (b, '')
 
