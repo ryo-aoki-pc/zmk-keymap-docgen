@@ -112,6 +112,28 @@ def test_mod_wrappers_and_layer_switches(resolver):
     assert tap(resolver, 'QK_MACRO_5') == 'M5'
 
 
+def test_mouse_buttons_old_and_new_names(resolver):
+    # QMK 0.26+ spells them MS_BTN1 … (no KC_ prefix); older keymaps use KC_BTN1 / KC_MS_BTN1
+    for old, new, label in [('KC_BTN1', 'MS_BTN1', '🖱左'), ('KC_BTN2', 'MS_BTN2', '🖱右'),
+                            ('KC_BTN3', 'MS_BTN3', '🖱中'), ('KC_BTN4', 'MS_BTN4', '🖱4'),
+                            ('KC_BTN5', 'MS_BTN5', '🖱5')]:
+        assert tap(resolver, old) == label
+        assert tap(resolver, new) == label
+    assert tap(resolver, 'KC_MS_BTN1') == '🖱左'
+    assert tap(resolver, 'MS_FOO') == 'MS_FOO'       # unknown MS_ name: bare name
+
+
+def test_keyball_custom_labels_cover_old_and_new_rgb_names():
+    labels = json.loads((REPO_ROOT / 'example/keyball_custom_keycodes.json')
+                        .read_text(encoding='utf-8'))
+    # QMK 0.30 removed RGB_TOG …; the UG_* names must show the same labels
+    pairs = [('RGB_TOG', 'UG_TOGG'), ('RGB_MOD', 'UG_NEXT'), ('RGB_RMOD', 'UG_PREV'),
+             ('RGB_HUI', 'UG_HUEU'), ('RGB_HUD', 'UG_HUED'), ('RGB_SAI', 'UG_SATU'),
+             ('RGB_SAD', 'UG_SATD'), ('RGB_VAI', 'UG_VALU'), ('RGB_VAD', 'UG_VALD')]
+    for old, new in pairs:
+        assert labels[new] == labels[old]
+
+
 def test_custom_and_sentinels(resolver):
     assert tap(resolver, 'AML_TO') == 'AML切替'
     assert tap(resolver, 'SSNP_HOR') == 'SSNP_HOR'   # unknown custom: bare name (R2)

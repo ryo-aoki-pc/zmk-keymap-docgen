@@ -32,5 +32,15 @@
   "RGB_VAI": "明度+",
   "RGB_VAD": "明度-",
 
+  "UG_TOGG": "RGB入切",
+  "UG_NEXT": "RGB次",
+  "UG_PREV": "RGB前",
+  "UG_HUEU": "色相+",
+  "UG_HUED": "色相-",
+  "UG_SATU": "彩度+",
+  "UG_SATD": "彩度-",
+  "UG_VALU": "明度+",
+  "UG_VALD": "明度-",
+
   "QK_BOOT": "BOOT"
 }
