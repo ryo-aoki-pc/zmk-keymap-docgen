@@ -7,12 +7,16 @@ ZMK keymap (.keymap) のレイヤー（指定がなければ全レイヤー）�
   1. Excel ファイル (.xlsx)
        - "動作" シートと "経路" シートを生成し、各シートに全レイヤーの表を縦に並べる
   2. 自己完結型 HTML ファイル (.html)
-       - 「レイアウト図」と「経路」の 2 セクションを、いずれも物理配列どおりのキー図で出力
+       - 「レイアウト図」と「経路」の 2 つの表示を、いずれも物理配列どおりのキー図で出力
        - 「レイアウト図」は各キーに解決済みの動作を、「経路」は behavior の解決経路を表示
          （経路は長いためキーをレイアウト図の 2 倍サイズで描画。
           物理配列 JSON が無い場合、経路は従来の表形式にフォールバック）
-       - 「動作」の内容はレイアウト図（キー表示とツールチップ）で確認できるため
-         HTML には出力しない
+       - JavaScript が動くブラウザでは 1 画面のビューアになる: レイヤーをタブ
+         （← / → ・数字キー）で切り替え、図は画面に合わせて拡大・縮小し、
+         Tap Dance / Mod Morph の図と経路はボタンで切り替え、マウスを重ねたキーの
+         全操作の動作と経路を下の欄に出す。JavaScript が無ければ全レイヤーを縦に並べる
+       - 「動作」の内容はレイアウト図（キー表示と詳細欄・ツールチップ）で確認できるため
+         HTML には表として出力しない
 
 Excel の各シート（および HTML のフォールバック表）は、キーボード物理行ごとに以下の構造を持つ：
   - 左端 1 列: 「操作」 = タップ / ホールド / ダブルタップ / Shift+ / Ctrl+
@@ -1294,27 +1298,7 @@ HTML_STYLE = """\
   .kb.path .key .kh.sz10, .kb.path .key .kh.sz9 { font-size: 10px; }
   .kb.path .key .kh.sz8, .kb.path .key .kh.sz7 { font-size: 9px; }
   .kb.path .key .kl { font-size: 10px; }
-  /* Layout-figure table: one row per layer; the layer's main figure and its
-     Tap Dance / Mod Morph figures all share the single right-hand cell. */
-  table.figures { width: auto; }
-  table.figures th.fig-layer {
-    white-space: nowrap;
-    vertical-align: middle;
-    font-family: -apple-system, "Segoe UI", "Noto Sans JP", Meiryo, sans-serif;
-    font-size: 13px;
-    background: #f6f8fa;
-    padding: 8px 12px;
-  }
-  table.figures td.fig-cell {
-    text-align: left;
-    white-space: normal;
-    padding: 10px 14px;
-    font-family: -apple-system, "Segoe UI", "Noto Sans JP", Meiryo, sans-serif;
-  }
-  /* Header cells of the figure table must not stick over the figures. */
-  table.figures thead th { position: static; }
-  table.figures .kb { margin: 6px 0; }
-  /* Caption above each Tap Dance / Mod Morph figure inside a layer's cell. */
+  /* Caption above each Tap Dance / Mod Morph figure inside a layer block. */
   .fig-caption {
     font-weight: 600;
     font-size: 13px;
@@ -1443,6 +1427,63 @@ def _figure_text(text: str) -> str:
     return text
 
 
+def _html_attr(s: str) -> str:
+    """Escape a value for a double-quoted HTML attribute."""
+    return _html_text(s).replace('"', '&quot;')
+
+
+def _layer_label(idx: int, name: str) -> str:
+    """Tab / heading label of a layer: 'L<n> <name>', or just 'L<n>' when the
+    name only repeats the number (Vial / QMK layers are named 'Layer <n>')."""
+    if name in (f'Layer {idx}', f'L{idx}'):
+        return f'L{idx}'
+    return f'L{idx} {name}'
+
+
+def _default_layer_indices(layers_data: list[tuple[str, list[str]]]) -> list[int]:
+    """Real layer index of each rendered layer: looked up by name in
+    LAYER_NAMES_BY_INDEX (filled for ALL keymap layers, so a CLI layer subset
+    keeps its real numbers), else the position in layers_data."""
+    by_name = {n: i for i, n in LAYER_NAMES_BY_INDEX.items()}
+    indices = [by_name.get(name, pos) for pos, (name, _) in enumerate(layers_data)]
+    if len(set(indices)) != len(indices):
+        return list(range(len(layers_data)))
+    return indices
+
+
+# A single-step action that switches layer: ZMK &mo / &lt hold ('L2'), and the
+# QMK resolver's MO / LT / LM ('L2', 'L2+⇧'), TO ('⇒L2'), TG / TT ('⇄L2'),
+# OSL ('OSL:L2') and DF ('DF:L2') forms.
+_JUMP_RE = re.compile(r'(?:⇒|⇄|OSL:|DF:)?L(\d+)(?:\+.+)?')
+# Momentary forms of the above: the layer is active only while the key is held.
+_MOMENTARY_RE = re.compile(r'L\d+(?:\+.+)?')
+
+
+def _layer_jump_target(action: str) -> int | None:
+    """Layer index a resolved action switches to, or None.
+
+    `⇒<layer name>` (ZMK &to, also as a macro step) is looked up by name first,
+    so a layer that happens to be named like 'L3' still resolves to its real
+    index. In a multi-step (macro) action only the ⇒ steps count (the last one
+    wins); a single step may be any _JUMP_RE form. Plain keys never match
+    ('L', 'LShift', 'A ▸ L3')."""
+    if not action:
+        return None
+    by_name = {n: i for i, n in LAYER_NAMES_BY_INDEX.items()}
+    steps = action.split(' ▸ ')
+    for step in reversed(steps):
+        s = step.lstrip('⇧⌃')
+        if s.endswith('×2'):
+            s = s[:-2]
+        if s.startswith('⇒') and s[1:] in by_name:
+            return by_name[s[1:]]
+        if len(steps) == 1 or s.startswith('⇒'):
+            m = _JUMP_RE.fullmatch(s)
+            if m:
+                return int(m.group(1))
+    return None
+
+
 def _display_width(s: str) -> float:
     """Rough visual width of a string in narrow-character units.
 
@@ -1510,7 +1551,7 @@ def _figure_span(css_class: str, text: str, box_scale: float = 1.0) -> str:
 def _visual_key_html(idx: int, binding: str, g: dict, scale: float, unit: float,
                      behaviors: dict, macros: dict, op: str = 'タップ',
                      mode: str = 'action', box_scale: float = 1.0,
-                     *, resolver=resolve) -> str:
+                     *, resolver=resolve, jump=frozenset()) -> str:
     """Render one absolutely-positioned key box for a visual figure.
 
     `op` selects which operation the key face shows. The default 'タップ' face
@@ -1518,7 +1559,15 @@ def _visual_key_html(idx: int, binding: str, g: dict, scale: float, unit: float,
     only that op's distinct assignment and dim every unassigned key.
     `mode` selects what the face displays: the resolved action ('action',
     レイアウト図) or the behavior-resolution path ('path', 経路).
-    `box_scale` is the key box size as a multiple of the standard KEY_PX box."""
+    `box_scale` is the key box size as a multiple of the standard KEY_PX box.
+
+    Data attributes for the HTML viewer: every key carries data-k (its binding
+    index, the same in every figure). A key whose shown op switches to a layer
+    in `jump` (the rendered layers other than its own) gets data-to (the layer
+    index) and data-via: 'hold' (the hold action is the jump, &lt / LT), 'mo'
+    (momentary &mo / MO) or 'to' (&to, a macro's ⇒ step, TO / TG / OSL / DF).
+    Main action-figure keys also list their ops with a real (not auto-derived)
+    assignment in data-x."""
     w = (g['w'] if g['w'] is not None else unit) * scale - KEY_GAP_PX
     h = (g['h'] if g['h'] is not None else unit) * scale - KEY_GAP_PX
     left = g['x'] * scale
@@ -1557,12 +1606,28 @@ def _visual_key_html(idx: int, binding: str, g: dict, scale: float, unit: float,
     # The "pos N" index fallback is meaningless on the figure, so it is omitted.
     label = KEY_LABELS.get(idx)
 
+    assigned = op == 'タップ' or _op_distinct(resolved, op, mode)
+    attrs = f' data-k="{idx}"'
+    if op == 'タップ':
+        candidates = (('タップ', ''), ('ホールド', 'hold'))
+    else:
+        candidates = ((op, ''),) if assigned else ()
+    for o, via in candidates:
+        target = _layer_jump_target(actions[o])
+        if target is not None and target in jump:
+            via = via or ('mo' if _MOMENTARY_RE.fullmatch(actions[o]) else 'to')
+            attrs += f' data-to="{target}" data-via="{via}"'
+            break
+    if op == 'タップ' and mode == 'action':
+        real = [o for o in OPS[1:] if _op_distinct(resolved, o, 'action')]
+        if real:
+            attrs += f' data-x="{_html_attr(" ".join(real))}"'
+
     if op != 'タップ':
         # Extra-op figure (Tap Dance / Mod Morph): show only keys with a distinct
         # assignment for this op; every other key is a dimmed empty outline.
-        assigned = _op_distinct(resolved, op, mode)
         cls = 'key' if assigned else 'key dim'
-        parts = [f'<div class="{cls}" style="{style}" title="{tip}">']
+        parts = [f'<div class="{cls}" style="{style}"{attrs} title="{tip}">']
         if b != '&none' and label:
             parts.append(f'<span class="kl">{_html_text(label)}</span>')
         if assigned:
@@ -1576,7 +1641,7 @@ def _visual_key_html(idx: int, binding: str, g: dict, scale: float, unit: float,
     elif b == '&trans':
         cls += ' trans'
 
-    parts = [f'<div class="{cls}" style="{style}" title="{tip}">']
+    parts = [f'<div class="{cls}" style="{style}"{attrs} title="{tip}">']
     if b != '&none' and label:
         parts.append(f'<span class="kl">{_html_text(label)}</span>')
     parts.append(_figure_span('kt', tap, box_scale))
@@ -1597,13 +1662,15 @@ def _visual_key_html(idx: int, binding: str, g: dict, scale: float, unit: float,
 def _html_visual_layer(bindings: list[str], behaviors: dict, macros: dict,
                        geom: list[dict], unit: float | None = None,
                        op: str = 'タップ', mode: str = 'action',
-                       key_px: float = KEY_PX, *, resolver=resolve) -> list[str]:
+                       key_px: float = KEY_PX, *, resolver=resolve,
+                       jump=frozenset()) -> list[str]:
     """Render a layer as a visual keyboard figure (keys placed by real x/y/w/h).
     `unit` (the layout's coordinate amount per 1u) is honored when given so
     fractional column-stagger offsets render at a sensible scale; otherwise it
     is auto-detected. `op` selects the operation each key face shows and `mode`
-    what it displays (action / path); `key_px` sets the rendered key size (see
-    _visual_key_html). Returns [] when no usable geometry is available."""
+    what it displays (action / path); `key_px` sets the rendered key size and
+    `jump` the layer indices keys may link to (see _visual_key_html). Returns []
+    when no usable geometry is available."""
     if not geom or len(geom) != len(bindings):
         return []
     if unit is None:
@@ -1616,7 +1683,7 @@ def _html_visual_layer(bindings: list[str], behaviors: dict, macros: dict,
     out = [f'<div class="{kb_cls}" style="width:{_fmt_px(width)}px;height:{_fmt_px(height)}px">']
     for idx, (binding, g) in enumerate(zip(bindings, geom)):
         out.append(_visual_key_html(idx, binding, g, scale, unit, behaviors, macros,
-                                    op, mode, box_scale, resolver=resolver))
+                                    op, mode, box_scale, resolver=resolver, jump=jump))
     out.append('</div>')
     return out
 
@@ -1645,84 +1712,95 @@ def _layer_extra_ops(bindings: list[str], behaviors: dict, macros: dict,
     return out
 
 
-def _html_extra_visual_layers(bindings: list[str], behaviors: dict,
-                              macros: dict, geom, unit, mode: str = 'action',
-                              key_px: float = KEY_PX, *, resolver=resolve) -> list[str]:
-    """Extra figures (caption + figure) for every op the layer has distinct
-    Tap Dance / Mod Morph assignments for. Rendered inside the layer's
-    figure-table cell, below the main figure. Returns [] when there are none."""
-    out: list[str] = []
-    for op in _layer_extra_ops(bindings, behaviors, macros, mode, resolver=resolver):
-        visual = _html_visual_layer(bindings, behaviors, macros, geom, unit,
-                                    op=op, mode=mode, key_px=key_px, resolver=resolver)
-        if not visual:
-            continue
-        out.append(f'<div class="fig-caption">{_html_text(EXTRA_OP_HEADING[op])}</div>')
-        out += visual
-    return out
+def _layer_figures(layers_data: list[tuple[str, list[str]]],
+                   behaviors: dict, macros: dict, geom, unit,
+                   mode: str = 'action', *, resolver=resolve,
+                   path_key_px: float = PATH_KEY_PX, extra_figures=None,
+                   layer_indices=None) -> list[tuple[int, str, list[tuple[str, str | None, list[str]]]]]:
+    """Every layer's figures for one view: [(layer index, layer name,
+    [(op, caption, figure lines), ...]), ...].
 
-
-def _html_figure_table(layers_data: list[tuple[str, list[str]]],
-                       behaviors: dict, macros: dict, geom, unit,
-                       mode: str = 'action', *, resolver=resolve,
-                       path_key_px: float = PATH_KEY_PX, extra_figures=None) -> list[str]:
-    """Render every layer's visual figures as one big table: one row per layer,
-    layer name in the left header cell, and ALL of that layer's figures (the main
-    figure plus its Tap Dance / Mod Morph figures) stacked in the single right
-    cell. `mode` selects the レイアウト図 (action faces, standard key size) or the
-    経路 figures (resolution-path faces, double key size). `extra_figures`, when
-    given, is a callable (layer_name, bindings) -> [(caption, op_bindings), ...]
-    supplying additional per-layer figures (e.g. Vial key overrides). Returns []
-    when no layer produces a figure."""
+    Per layer: the main figure (op 'main', no caption), then one figure per op
+    the layer has distinct Tap Dance / Mod Morph assignments for (op = the OPS
+    name, caption from EXTRA_OP_HEADING), then the `extra_figures` ones (a
+    callable (layer_name, bindings) -> [(caption, op_bindings), ...], e.g. Vial
+    key overrides; op = caption). `mode` selects the レイアウト図 (action faces,
+    standard key size) or the 経路 figures (resolution-path faces, path_key_px).
+    `layer_indices` are the real layer numbers (default:
+    _default_layer_indices); keys link (data-to) to the other rendered layers.
+    Layers without usable geometry are skipped, so [] means no figures."""
     key_px = KEY_PX if mode == 'action' else path_key_px
-    col_label = 'レイアウト図' if mode == 'action' else '経路'
-    rows: list[str] = []
-    for layer_name, bindings in layers_data:
-        visual = _html_visual_layer(bindings, behaviors, macros, geom, unit,
-                                    mode=mode, key_px=key_px, resolver=resolver)
-        if not visual:
+    indices = (list(layer_indices) if layer_indices is not None
+               else _default_layer_indices(layers_data))
+    rendered = frozenset(indices)
+    out = []
+    for idx, (layer_name, bindings) in zip(indices, layers_data):
+        jump = rendered - {idx}
+        main = _html_visual_layer(bindings, behaviors, macros, geom, unit, mode=mode,
+                                  key_px=key_px, resolver=resolver, jump=jump)
+        if not main:
             continue
-        rows.append('<tr>')
-        rows.append(f'<th class="fig-layer">{_html_text(layer_name)}</th>')
-        rows.append('<td class="fig-cell">')
-        rows += visual
-        rows += _html_extra_visual_layers(bindings, behaviors, macros, geom, unit,
-                                          mode, key_px, resolver=resolver)
-        for caption, op_bindings in (extra_figures(layer_name, bindings) if extra_figures else ()):
-            fig = _html_visual_layer(op_bindings, behaviors, macros, geom, unit,
-                                     op='タップ', mode=mode, key_px=key_px, resolver=resolver)
+        figs: list[tuple[str, str | None, list[str]]] = [('main', None, main)]
+        for op in _layer_extra_ops(bindings, behaviors, macros, mode, resolver=resolver):
+            fig = _html_visual_layer(bindings, behaviors, macros, geom, unit, op=op, mode=mode,
+                                     key_px=key_px, resolver=resolver, jump=jump)
             if fig:
-                rows.append(f'<div class="fig-caption">{_html_text(caption)}</div>')
-                rows += fig
-        rows.append('</td>')
-        rows.append('</tr>')
-    if not rows:
-        return []
-    out = ['<table class="figures">', '<thead>', '<tr>',
-           f'<th>{_html_text("レイヤー")}</th>',
-           f'<th>{_html_text(col_label)}</th>',
-           '</tr>', '</thead>', '<tbody>']
-    out += rows
-    out += ['</tbody>', '</table>']
+                figs.append((op, EXTRA_OP_HEADING[op], fig))
+        for caption, op_bindings in (extra_figures(layer_name, bindings) if extra_figures else ()):
+            fig = _html_visual_layer(op_bindings, behaviors, macros, geom, unit, op='タップ',
+                                     mode=mode, key_px=key_px, resolver=resolver, jump=jump)
+            if fig:
+                figs.append((caption, caption, fig))
+        out.append((idx, layer_name, figs))
     return out
 
 
-# Prose shared by write_html: section intros for the figure-based sections and
-# the bullet list describing the table fallback (used only without geometry).
+def _html_layer_blocks(entries) -> list[str]:
+    """One framed block per layer (heading + every figure of the layer, each in
+    a .kd-fig keyed by its op). Without JavaScript the blocks stack like the
+    rows of a table; the viewer shows one .kd-fig at a time."""
+    out: list[str] = []
+    for idx, name, figs in entries:
+        out.append(f'<div class="kd-layer" data-l="{idx}">')
+        out.append(f'<h3 class="kd-layer-h">{_html_text(_layer_label(idx, name))}</h3>')
+        out.append('<div class="kd-figs">')
+        for op, caption, lines in figs:
+            out.append(f'<div class="kd-fig" data-op="{_html_attr(op)}">')
+            if caption:
+                out.append(f'<div class="fig-caption">{_html_text(caption)}</div>')
+            out += lines
+            out.append('</div>')
+        out.append('</div>')
+        out.append('</div>')
+    return out
+
+
+def _html_figure_view(layers_data: list[tuple[str, list[str]]],
+                      behaviors: dict, macros: dict, geom, unit,
+                      mode: str = 'action', *, resolver=resolve,
+                      path_key_px: float = PATH_KEY_PX, extra_figures=None,
+                      layer_indices=None) -> list[str]:
+    """The layer blocks of one view (see _layer_figures); [] without geometry."""
+    return _html_layer_blocks(_layer_figures(
+        layers_data, behaviors, macros, geom, unit, mode, resolver=resolver,
+        path_key_px=path_key_px, extra_figures=extra_figures, layer_indices=layer_indices))
+
+
+# Prose shared by write_html: the section intros (shown when JavaScript does not
+# run and every layer is stacked) and the bullet list describing the table
+# fallback (used only without geometry).
 _LAYOUT_FIGURE_INTRO = (
-    '各レイヤーを実機の物理配列どおりに配置した図を 1 つの表にまとめる。表の各行が 1 レイヤーで、'
-    '左列がレイヤー名、右のセルがそのレイヤーの図。'
+    '各レイヤーを実機の物理配列どおりに配置した図を、レイヤーごとに縦に並べる。'
     '各キーは「ラベル / タップ動作 / (ホールド動作)」を表示し、'
     '全操作（ダブルタップ / Shift+ / Ctrl+ など）はマウスオーバーのツールチップで確認できる。'
-    'Tap Dance / Mod Morph の割り当てがあるレイヤーには、その操作専用の図を同じセル内に追加表示する'
+    'Tap Dance / Mod Morph の割り当てがあるレイヤーには、その操作専用の図を続けて表示する'
     '（割り当てのないキーは薄い枠のみ）。'
 )
 _PATH_FIGURE_INTRO = (
-    '各レイヤーのバインディング解決経路を、レイアウト図と同じ物理配列の図で表示する'
-    '（経路は長いためキーはレイアウト図の 2 倍サイズ）。'
+    '各レイヤーのバインディング解決経路を、レイアウト図と同じ物理配列の図で表示する。'
     '各キーはタップ操作の解決経路（behavior 名[添字] ▸ … ▸ 最終バインディング）を表示し、'
     'ホールドの経路がタップと異なる場合は青字で併記する。'
-    'Tap Dance / Mod Morph で経路が分岐するキーは、その操作専用の図を同じセル内に追加表示する'
+    'Tap Dance / Mod Morph で経路が分岐するキーは、その操作専用の図を続けて表示する'
     '（分岐のないキーは薄い枠のみ）。'
     '全操作の経路と生バインディングはマウスオーバーのツールチップで確認できる。'
 )
@@ -1733,125 +1811,882 @@ _TABLE_FALLBACK_BULLETS = (
 )
 
 
+def _html_table_fallback_body(layers_data: list[tuple[str, list[str]]],
+                              behaviors: dict, macros: dict, grid, display_cols,
+                              *, title=None, show_path=True) -> list[str]:
+    """Page body when no usable physical-layout geometry exists: the legacy
+    「Row N」 + 操作 table form of the 経路 (unchanged; no viewer)."""
+    body: list[str] = []
+    if len(layers_data) == 1:
+        layer_name, bindings = layers_data[0]
+        body.append(f'<h1>{_html_inline(f"{layer_name} レイヤー キー割り当て一覧")}</h1>')
+        body.append('<p>' + _html_inline(
+            f'※ {len(bindings)} 個のバインディング位置を 1 表に集約。'
+            f'実機の物理配列に合わせて「Row N」セクション行 + 操作行を縦に並べる（左右分割は中央の空列で分離）。'
+        ) + '</p>')
+        body.append('<ul>')
+        for bullet in _TABLE_FALLBACK_BULLETS:
+            body.append('<li>' + _html_inline(bullet) + '</li>')
+        body.append('</ul>')
+        if show_path:
+            body.append(f'<h2>{_html_inline("経路")}</h2>')
+            header, rows = _build_layer_mode_table(bindings, behaviors, macros, 'path',
+                                                   grid, display_cols)
+            if header is not None:
+                body += _html_table_lines(header, rows)
+        return body
+
+    body.append(f'<h1>{_html_inline(title or "キー割り当て一覧")}</h1>')
+    if show_path:
+        intro = (f'※ {len(layers_data)} 個のレイヤーのキー割り当てを 1 ファイルに集約。'
+                 f'各レイヤーの動作は実機の物理配列に合わせた「レイアウト図」セクションで確認し、'
+                 f'バインディングの解決経路は「経路」セクションで確認する。')
+    else:
+        intro = (f'※ {len(layers_data)} 個のレイヤーのキー割り当てを 1 ファイルに集約。'
+                 f'各レイヤーの動作は実機の物理配列に合わせた「レイアウト図」セクションで確認する。')
+    body.append('<p>' + _html_inline(intro) + '</p>')
+    body.append('<ul>')
+    for bullet in _TABLE_FALLBACK_BULLETS:
+        body.append('<li>' + _html_inline(bullet) + '</li>')
+    body.append('</ul>')
+    if show_path:
+        body.append(f'<h2>{_html_inline("経路")}</h2>')
+        # Positions that are `&none` in the DEFAULT layer are inactive and
+        # hidden in every layer's table.
+        active_indices = _compute_active_indices(layers_data)
+
+        # Merge every layer's rows into a single table so the column widths
+        # (which the browser auto-sizes per-table) line up across layers.
+        shared_header: list[str] | None = None
+        layer_blocks: list[tuple[str, list[dict]]] = []
+        for layer_name, bindings in layers_data:
+            header, rows = _build_layer_mode_table(bindings, behaviors, macros, 'path',
+                                                   grid, display_cols,
+                                                   active_indices=active_indices)
+            if header is None:
+                continue
+            shared_header = header
+            layer_blocks.append((layer_name, rows))
+        if shared_header is not None:
+            body += _html_table_open(shared_header)
+            for layer_name, rows in layer_blocks:
+                body.append(_html_layer_row(layer_name, len(shared_header)))
+                body += _html_body_rows(rows)
+            body += _html_table_close()
+    return body
+
+
+# ----------------------------------------------------------------------------
+# One-screen viewer
+# ----------------------------------------------------------------------------
+# The figure page is a small single-page viewer. Without JavaScript (and before
+# it runs) every layer block is stacked: the レイアウト図 view, then the 経路
+# view. A one-line script in <head> adds the 'kd-js' class to <html>, which
+# switches the CSS to one screen: a header (layer tabs, キー / 経路 toggle, op
+# toggle, 入り方 line), the stage showing exactly one figure scaled to fit, and
+# a fixed-height detail panel. _VIEWER_JS (end of <body>) drives it; if it
+# fails, it removes 'kd-js' again so the stacked page comes back.
+#
+# The page must also work on htmlpreview.github.io (the link in each keyboard
+# repository's README). That loader injects <base href="raw URL">, rewrites
+# every '<script' and re-creates the inline scripts after document.write(). So
+# the script never contains '<script', '</' or '<!--', and never uses anchors,
+# the History API or location (they would resolve against the injected base).
+
+HTML_VIEWER_STYLE = """\
+  /* ---- One-screen viewer (see _html_viewer_body) ---- */
+  /* Without JavaScript: every layer block stacked like the rows of a table. */
+  .kd-ui, .kd-label, .kd-detail { display: none; }
+  .kd-view { margin-bottom: 2em; }
+  .kd-layer {
+    display: flex;
+    align-items: stretch;
+    width: max-content;
+    border: 1px solid #d0d7de;
+    margin-top: -1px;
+  }
+  .kd-layer-h {
+    margin: 0;
+    display: flex;
+    align-items: center;
+    min-width: 8em;
+    padding: 8px 12px;
+    background: #f6f8fa;
+    border-right: 1px solid #d0d7de;
+    font-size: 13px;
+    white-space: nowrap;
+  }
+  .kd-figs { padding: 10px 14px; }
+  .kd-figs .kb { margin: 6px 0; }
+  /* With JavaScript: one screen, no page scroll. */
+  html.kd-js body {
+    max-width: none;
+    margin: 0;
+    padding: 0;
+    height: 100vh;
+    height: 100dvh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    line-height: 1.4;
+  }
+  .kd-js .kd-head { flex: none; padding: 6px 12px 6px; border-bottom: 1px solid #d0d7de; }
+  .kd-js .kd-top { display: flex; align-items: center; gap: 12px; min-width: 0; }
+  .kd-js .kd-head h1 {
+    font-size: 16px;
+    margin: 0;
+    padding: 0;
+    border: 0;
+    min-width: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .kd-js .kd-ui, .kd-js .kd-seg { display: flex; }
+  .kd-js .kd-intro, .kd-js .kd-view > h2, .kd-js .kd-layer-h, .kd-js .fig-caption { display: none; }
+  .kd-js .kd-hint { margin-left: auto; font-size: 11px; color: #57606a; white-space: nowrap; }
+  .kd-seg {
+    flex: none;
+    border: 1px solid #d0d7de;
+    border-radius: 6px;
+    overflow: hidden;
+  }
+  .kd-seg button, .kd-tabs button, .kd-chip {
+    font: inherit;
+    font-size: 12px;
+    line-height: 1.5;
+    color: #1f2328;
+    background: #ffffff;
+    cursor: pointer;
+  }
+  .kd-seg button { border: 0; border-right: 1px solid #d0d7de; padding: 1px 10px; }
+  .kd-seg button:last-child { border-right: 0; }
+  .kd-seg button.on, .kd-tabs button.on { background: #0969da; border-color: #0969da; color: #ffffff; }
+  .kd-seg button:disabled { color: #afb8c1; background: #f6f8fa; cursor: default; }
+  .kd-seg .kd-n { opacity: .75; }
+  .kd-js .kd-tabs { flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+  .kd-tabs button {
+    flex: none;
+    border: 1px solid #d0d7de;
+    border-radius: 6px;
+    padding: 1px 8px;
+    background: #f6f8fa;
+    white-space: nowrap;
+  }
+  .kd-tabs button:hover, .kd-chip:hover { border-color: #0969da; }
+  .kd-js .kd-bar { flex-wrap: wrap; align-items: center; gap: 4px 12px; margin-top: 6px; }
+  .kd-js .kd-entry {
+    flex: 1 1 0;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    overflow: hidden;
+    white-space: nowrap;
+    font-size: 12px;
+    color: #57606a;
+  }
+  .kd-chip { border: 1px solid #d0d7de; border-radius: 10px; padding: 0 8px; white-space: nowrap; }
+  .kd-chip.on { border-color: #0969da; color: #0969da; font-weight: 600; }
+  .kd-chip.kd-from { border-color: #1a7f37; }
+  .kd-muted { color: #8a939b; }
+  .kd-js .kd-stage { flex: 1 1 auto; min-height: 0; position: relative; overflow: auto; }
+  .kd-js .kd-view, .kd-js .kd-layer, .kd-js .kd-fig { display: none; }
+  .kd-js .kd-view.on, .kd-js .kd-layer.on { display: block; margin: 0; border: 0; width: auto; }
+  .kd-js .kd-figs { padding: 0; }
+  .kd-js .kd-fig.on { display: block; position: absolute; }
+  .kd-js .kd-fig .kb { position: absolute; left: 0; top: 0; margin: 0; transform-origin: 0 0; }
+  .kd-js .kd-label {
+    display: block;
+    position: absolute;
+    left: 12px;
+    top: 4px;
+    font-size: 12px;
+    color: #57606a;
+    white-space: nowrap;
+  }
+  .kd-js .key[data-to] { cursor: pointer; }
+  .kd-js .key[data-to]::after {
+    content: "↗";
+    position: absolute;
+    top: 1px;
+    right: 3px;
+    font-size: 9px;
+    line-height: 1;
+    color: #0969da;
+  }
+  .kd-js .key[data-to]:hover { box-shadow: 0 0 0 2px #0969da; }
+  .kd-js .key.kd-held { box-shadow: inset 0 0 0 2px #1a7f37; opacity: 1; }
+  .kd-js .key.kd-hover { outline: 2px solid #54aeff; outline-offset: 1px; }
+  .kd-js .key.kd-pin { outline: 2px solid #bf8700; outline-offset: 1px; }
+  @keyframes kd-flash {
+    from { box-shadow: 0 0 0 5px #bf8700; }
+    to { box-shadow: 0 0 0 0 rgba(191, 135, 0, 0); }
+  }
+  .kd-js .key.kd-flash { animation: kd-flash 1.5s ease-out; }
+  .kd-js .kd-detail {
+    display: block;
+    flex: none;
+    height: 168px;
+    overflow: auto;
+    padding: 6px 12px;
+    border-top: 1px solid #d0d7de;
+    background: #f6f8fa;
+    font-size: 12px;
+  }
+  .kd-detail p { margin: 0 0 4px; }
+  .kd-detail .kd-entry-full { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
+  .kd-detail .kd-chip { white-space: normal; text-align: left; }
+  .kd-d-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; font-size: 13px; }
+  .kd-d-body {
+    display: grid;
+    grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr);
+    gap: 12px;
+    margin-top: 4px;
+  }
+  .kd-detail table { width: auto; margin: 0; border-collapse: collapse; justify-self: start; }
+  .kd-detail th, .kd-detail td {
+    border: 0;
+    border-bottom: 1px solid #e1e4e8;
+    padding: 0 8px;
+    line-height: 1.35;
+    text-align: left;
+    vertical-align: top;
+    white-space: normal;
+    font-family: inherit;
+    font-size: 12px;
+  }
+  .kd-detail th { color: #57606a; font-weight: 600; white-space: nowrap; }
+  .kd-detail td.kd-path { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; word-break: break-all; }
+  .kd-detail tr.kd-auto td { color: #8a939b; }
+  .kd-detail tr.kd-real td:nth-child(2) { font-weight: 600; }
+  .kd-detail tr.kd-cur { background: #fff8c5; }
+  .kd-d-sub { color: #57606a; font-weight: 600; margin-bottom: 2px; }
+  .kd-chips { display: flex; flex-wrap: wrap; gap: 4px; }
+  @media (max-height: 700px) {
+    .kd-js .kd-detail { height: 132px; }
+  }
+  @media (max-width: 700px) {
+    .kd-js .kd-hint { display: none; }
+    .kd-js .kd-tabs { flex-wrap: nowrap; overflow-x: auto; }
+    .kd-js .kd-tabs .kd-tn { display: none; }
+    .kd-js .kd-detail { height: 38%; }
+    .kd-d-body { grid-template-columns: minmax(0, 1fr); }
+  }
+"""
+
+# Viewer script (ES5, no globals). __OPS__ is replaced by the OPS tuple as JSON.
+_VIEWER_JS = r"""(function () {
+  'use strict';
+  var D = document, R = D.documentElement;
+  var OPS = __OPS__;
+  var MAX_UP = 2, MIN_S = 0.5, PAD = 12, TOP = 24;
+  var VIA = { hold: '長押し', mo: '押している間', to: '押すと切り替え' };
+
+  function arr(list) { return Array.prototype.slice.call(list || []); }
+  function has(e, c) { return (' ' + e.className + ' ').indexOf(' ' + c + ' ') >= 0; }
+  function cls(e, c, on) { if (on) { e.classList.add(c); } else { e.classList.remove(c); } }
+  function make(tag, className, text) {
+    var e = D.createElement(tag);
+    if (className) { e.className = className; }
+    if (text !== undefined && text !== null) { e.textContent = text; }
+    return e;
+  }
+  function button(className, text, onClick) {
+    var b = make('button', className, text);
+    b.type = 'button';
+    b.addEventListener('click', onClick);
+    return b;
+  }
+  function clear(e) { while (e.firstChild) { e.removeChild(e.firstChild); } }
+  function own(o, k) { return Object.prototype.hasOwnProperty.call(o, k); }
+  // Text of a key-cap span; the line break between macro / path steps becomes a space.
+  function spanText(s) {
+    var out = '', n;
+    if (!s) { return ''; }
+    for (n = s.firstChild; n; n = n.nextSibling) {
+      out += n.nodeType === 3 ? n.nodeValue : (n.nodeName === 'BR' ? ' ' : n.textContent);
+    }
+    return out;
+  }
+  // Tooltip: 'op: value' lines, then the raw binding as the last line.
+  function parseTip(t) {
+    var lines = (t || '').split('\n'), raw = lines.pop() || '', ops = {}, i, j, op;
+    for (i = 0; i < lines.length; i++) {
+      j = lines[i].indexOf(': ');
+      if (j > 0) {
+        op = lines[i].slice(0, j);
+        if (OPS.indexOf(op) >= 0) { ops[op] = lines[i].slice(j + 2); }
+      }
+    }
+    return { raw: raw, ops: ops };
+  }
+
+  function init() {
+    var stage = D.querySelector('.kd-stage'), detail = D.querySelector('.kd-detail');
+    var labelEl = D.querySelector('.kd-label'), entryEl = D.querySelector('.kd-entry');
+    var tabs = arr(D.querySelectorAll('.kd-tabs [data-l]'));
+    var viewBtns = arr(D.querySelectorAll('.kd-views [data-view]'));
+    var opBtns = arr(D.querySelectorAll('.kd-ops [data-op]'));
+    var canHover = !!(window.matchMedia && window.matchMedia('(hover: hover)').matches);
+    var views = {}, order = [], posOf = {}, labelOf = {}, painted = [];
+    var S = { i: 0, view: 'key', op: 'main', pin: null, hover: null, held: {} };
+
+    arr(D.querySelectorAll('.kd-view')).forEach(function (ve) {
+      var V = { el: ve, layers: {} }, vn = ve.getAttribute('data-view');
+      views[vn] = V;
+      arr(ve.querySelectorAll('.kd-layer')).forEach(function (le) {
+        var l = le.getAttribute('data-l'), h = le.querySelector('.kd-layer-h');
+        var L = { el: le, figs: {}, order: [] };
+        V.layers[l] = L;
+        if (vn === 'key') {
+          posOf[l] = order.length;
+          order.push(l);
+          labelOf[l] = h ? h.textContent : 'L' + l;
+        }
+        arr(le.querySelectorAll('.kd-fig')).forEach(function (fe) {
+          var op = fe.getAttribute('data-op'), cap = fe.querySelector('.fig-caption');
+          var F = { el: fe, kb: fe.querySelector('.kb'), op: op, keys: {}, count: 0, box: null,
+                    caption: cap ? cap.textContent : '' };
+          L.figs[op] = F;
+          L.order.push(op);
+          arr(F.kb.querySelectorAll('.key')).forEach(function (ke) {
+            var info = parseTip(ke.getAttribute('title')), kl = ke.querySelector('.kl');
+            ke.removeAttribute('title');
+            info.el = ke;
+            info.k = ke.getAttribute('data-k');
+            info.to = ke.getAttribute('data-to');
+            info.via = ke.getAttribute('data-via');
+            info.x = (ke.getAttribute('data-x') || '').split(' ');
+            info.tap = spanText(ke.querySelector('.kt'));
+            info.hold = spanText(ke.querySelector('.kh'));
+            info.label = kl ? kl.textContent : '';
+            info.none = has(ke, 'none');
+            info.dim = has(ke, 'dim');
+            ke.kdInfo = info;
+            F.keys[info.k] = info;
+            if (!info.none && !info.dim) { F.count++; }
+          });
+        });
+      });
+    });
+    if (!stage || !detail || !views.key || !order.length) { throw new Error('keymap viewer: nothing to show'); }
+
+    function fig(view, l, op) {
+      var V = views[view], L = V && V.layers[l];
+      return (L && own(L.figs, op)) ? L.figs[op] : null;
+    }
+    function curL() { return order[S.i]; }
+    function curOp() { return fig(S.view, curL(), S.op) ? S.op : 'main'; }
+    function cur() { return fig(S.view, curL(), curOp()); }
+    function face(info) {
+      if (!info || info.none || !info.tap) { return '—'; }
+      return info.tap + (info.hold ? ' / ' + info.hold : '');
+    }
+    // Name of a physical key: its layout label, else its tap in the first layer.
+    function posName(k) {
+      var base = fig('key', order[0], 'main'), b = base && base.keys[k];
+      if (b && b.label) { return b.label; }
+      if (b && !b.none && b.tap && b.tap !== '▽') { return b.tap; }
+      return 'キー ' + k;
+    }
+
+    // Keys in the other layers' main key figures that switch to layer l.
+    function sources(l) {
+      var groups = [];
+      order.forEach(function (sl) {
+        var F = fig('key', sl, 'main'), g = null, k, info, via, name;
+        if (sl === l || !F) { return; }
+        for (k in F.keys) {
+          if (!own(F.keys, k) || F.keys[k].to !== l) { continue; }
+          info = F.keys[k];
+          via = own(VIA, info.via) ? info.via : 'to';
+          if (!g) { g = { l: sl, keys: [], held: [], vias: [], names: {} }; groups.push(g); }
+          g.keys.push(k);
+          if (via === 'hold' || via === 'mo') { g.held.push(k); }
+          if (g.vias.indexOf(via) < 0) { g.vias.push(via); g.names[via] = []; }
+          name = posName(k);
+          if (g.names[via].indexOf(name) < 0) { g.names[via].push(name); }
+        }
+        if (g) {
+          g.text = g.vias.map(function (v) { return g.names[v].join('・') + ' (' + VIA[v] + ')'; }).join('、');
+        }
+      });
+      return groups;
+    }
+    function entryInto(box, l) {
+      var groups = sources(l);
+      box.appendChild(make('span', 'kd-d-sub', '入り方:'));
+      if (!groups.length) {
+        box.appendChild(make('span', 'kd-muted',
+          l === order[0] ? '既定のレイヤー' : 'このレイヤーに切り替えるキーは無い'));
+        return groups;
+      }
+      groups.forEach(function (g) {
+        box.appendChild(button('kd-chip' + (g.held.length ? ' kd-from' : ''),
+          labelOf[g.l] + ' の ' + g.text,
+          function () { goTo(posOf[g.l]); flash(g.keys); }));
+      });
+      return groups;
+    }
+
+    function measure(F) {
+      var kb = F.kb, o, x0, y0, x1, y1;
+      if (F.box) { return F.box; }
+      kb.style.transform = 'none';
+      o = kb.getBoundingClientRect();
+      if (!o.width) { return null; }
+      x0 = 0; y0 = 0; x1 = kb.offsetWidth; y1 = kb.offsetHeight;
+      arr(kb.children).forEach(function (c) {
+        var r = c.getBoundingClientRect();
+        x0 = Math.min(x0, r.left - o.left);
+        y0 = Math.min(y0, r.top - o.top);
+        x1 = Math.max(x1, r.right - o.left);
+        y1 = Math.max(y1, r.bottom - o.top);
+      });
+      F.box = { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
+      return F.box;
+    }
+    function fit() {
+      var F = cur(), b = F && measure(F), aw, ah, s, w, h;
+      if (!b) { return; }
+      aw = stage.clientWidth - 2 * PAD - 1;
+      ah = stage.clientHeight - TOP - PAD - 1;
+      s = Math.max(MIN_S, Math.min(aw / b.w, ah / b.h, MAX_UP));
+      w = b.w * s;
+      h = b.h * s;
+      F.el.style.width = w + 'px';
+      F.el.style.height = h + 'px';
+      F.el.style.left = Math.max(PAD, PAD + (aw - w) / 2) + 'px';
+      F.el.style.top = Math.max(TOP, TOP + (ah - h) / 2) + 'px';
+      F.kb.style.transform = 'translate(' + (-b.x * s) + 'px,' + (-b.y * s) + 'px) scale(' + s + ')';
+      F.scale = s;
+    }
+    var pending = false;
+    function refit() {
+      if (pending) { return; }
+      pending = true;
+      var later = function () { pending = false; fit(); };
+      if (window.requestAnimationFrame) { window.requestAnimationFrame(later); } else { setTimeout(later, 16); }
+    }
+
+    function paint() {
+      var F = cur(), k, info;
+      painted.forEach(function (e) {
+        e.classList.remove('kd-hover');
+        e.classList.remove('kd-pin');
+        e.classList.remove('kd-held');
+      });
+      painted = [];
+      if (!F) { return; }
+      for (k in F.keys) {
+        if (!own(F.keys, k)) { continue; }
+        info = F.keys[k];
+        if (k === S.hover) { info.el.classList.add('kd-hover'); }
+        if (k === S.pin) { info.el.classList.add('kd-pin'); }
+        if (S.held[k]) { info.el.classList.add('kd-held'); }
+        if (k === S.hover || k === S.pin || S.held[k]) { painted.push(info.el); }
+      }
+    }
+    function flash(keys) {
+      var F = cur();
+      if (!F) { return; }
+      keys.forEach(function (k) {
+        var info = F.keys[k];
+        if (!info) { return; }
+        info.el.classList.remove('kd-flash');
+        info.el.getBoundingClientRect();
+        info.el.classList.add('kd-flash');
+      });
+      setTimeout(function () {
+        keys.forEach(function (k) { if (F.keys[k]) { F.keys[k].el.classList.remove('kd-flash'); } });
+      }, 1600);
+    }
+
+    function row(t, op, action, path, real, current) {
+      var tr = make('tr', (real ? 'kd-real' : 'kd-auto') + (current ? ' kd-cur' : ''));
+      tr.appendChild(make('th', null, op));
+      tr.appendChild(make('td', null, action));
+      if (views.path) { tr.appendChild(make('td', 'kd-path', path)); }
+      t.appendChild(tr);
+    }
+    function opsTable(l, k, ki, pi) {
+      var t = make('table'), hr = make('tr'), op = curOp(), rows = 0, L = views.key.layers[l];
+      var tapPath = pi ? (pi.ops['タップ'] || '') : '';
+      if (ki.raw === '&trans' || ki.raw === '&none') {
+        hr.appendChild(make('td', 'kd-muted', ki.raw === '&trans'
+          ? '▽ このレイヤーでは割り当てず、下のレイヤーのキーがそのまま効く'
+          : '何もしない'));
+        t.appendChild(hr);
+        return t;
+      }
+      hr.appendChild(make('th', null, '操作'));
+      hr.appendChild(make('th', null, '動作'));
+      if (views.path) { hr.appendChild(make('th', null, '経路')); }
+      t.appendChild(hr);
+      OPS.forEach(function (o) {
+        var p = '', a = own(ki.ops, o) ? ki.ops[o] : null;
+        // A tap that resolves to nothing (e.g. a tap dance whose single tap is
+        // &none) still has a path worth showing.
+        if (a === null && o === 'タップ' && pi && own(pi.ops, o)) { a = '—'; }
+        if (a === null) { return; }
+        if (pi) {
+          p = own(pi.ops, o) ? pi.ops[o] : tapPath;
+          if (o !== 'タップ' && p && p === tapPath) { p = '〃'; }
+        }
+        row(t, o, a, p, o === 'タップ' || ki.x.indexOf(o) >= 0, o === op);
+        rows++;
+      });
+      // Extra figures that are not one of OPS (e.g. Vial key overrides).
+      L.order.forEach(function (o) {
+        var f = L.figs[o].keys[k], pf, pk;
+        if (o === 'main' || OPS.indexOf(o) >= 0 || !f || f.none || f.dim) { return; }
+        pf = fig('path', l, o);
+        pk = pf && pf.keys[k];
+        row(t, o, f.ops['タップ'] || f.tap, pk ? (pk.ops['タップ'] || '') : '', true, o === op);
+        rows++;
+      });
+      if (!rows) {
+        hr = make('tr');
+        hr.appendChild(make('td', 'kd-muted', '割り当てなし'));
+        t.appendChild(hr);
+      }
+      return t;
+    }
+    function layerChips(k) {
+      var box = make('div'), chips = make('div', 'kd-chips');
+      box.appendChild(make('div', 'kd-d-sub', '各レイヤー'));
+      order.forEach(function (l, i) {
+        var F = fig('key', l, 'main'), b = button('kd-chip' + (i === S.i ? ' on' : ''),
+          'L' + l + ' ' + face(F && F.keys[k]), function () { goTo(i); });
+        b.title = labelOf[l];
+        chips.appendChild(b);
+      });
+      box.appendChild(chips);
+      return box;
+    }
+    function showKey(k) {
+      var l = curL(), KF = fig('key', l, 'main'), PF = fig('path', l, 'main');
+      var ki = KF && KF.keys[k], pi = PF && PF.keys[k], head, body;
+      if (!ki) { return false; }
+      head = make('div', 'kd-d-head');
+      head.appendChild(make('b', null, labelOf[l]));
+      head.appendChild(make('span', null, '「' + posName(k) + '」の位置'));
+      head.appendChild(make('code', null, ki.raw));
+      if (ki.to !== null && own(posOf, ki.to)) {
+        head.appendChild(button('kd-chip', '→ ' + labelOf[ki.to], function () { goTo(posOf[ki.to]); }));
+      }
+      if (S.pin !== null) { head.appendChild(make('span', 'kd-muted', '固定中 (Esc で解除)')); }
+      detail.appendChild(head);
+      body = make('div', 'kd-d-body');
+      body.appendChild(opsTable(l, k, ki, pi));
+      if (order.length > 1) { body.appendChild(layerChips(k)); }
+      detail.appendChild(body);
+      return true;
+    }
+    function showHelp() {
+      var p;
+      detail.appendChild(make('p', null,
+        (canHover ? 'キーにマウスを重ねると' : 'キーをタップすると') + '、そのキーの各操作の動作' +
+        (views.path ? 'と経路' : '') + (order.length > 1 ? '、各レイヤーでの割り当て' : '') +
+        'をここに表示します。' + (canHover ? 'クリックで固定、Esc で解除。' : 'もう一度タップすると解除。')));
+      if (order.length > 1) {
+        detail.appendChild(make('p', null,
+          '↗ の付いたキーは、そのレイヤーに切り替えるキーです。' +
+          (canHover ? 'クリックすると' : '2 回タップすると') + 'そのレイヤーを表示します。' +
+          '← / → と数字キー (レイヤー番号) でも切り替えられます。'));
+        p = make('p', 'kd-entry-full');
+        entryInto(p, curL());
+        detail.appendChild(p);
+      }
+      if (views.path) {
+        detail.appendChild(make('p', null,
+          '「経路」(V キー) は、キーごとに behavior の解決経路 (behavior 名[添字] ▸ … ▸ 最終バインディング) を表示します。'));
+      }
+    }
+    function showDetail() {
+      var k = S.pin !== null ? S.pin : S.hover;
+      clear(detail);
+      if (k === null || !showKey(k)) { showHelp(); }
+    }
+
+    function render() {
+      var l = curL(), op = curOp(), F = cur(), groups = [];
+      Object.keys(views).forEach(function (vn) {
+        var V = views[vn];
+        cls(V.el, 'on', vn === S.view);
+        Object.keys(V.layers).forEach(function (lk) {
+          var L = V.layers[lk];
+          cls(L.el, 'on', vn === S.view && lk === l);
+          L.order.forEach(function (o) { cls(L.figs[o].el, 'on', L.figs[o] === F); });
+        });
+      });
+      tabs.forEach(function (b) {
+        var on = b.getAttribute('data-l') === l;
+        cls(b, 'on', on);
+        b.setAttribute('aria-selected', on ? 'true' : 'false');
+      });
+      viewBtns.forEach(function (b) {
+        var on = b.getAttribute('data-view') === S.view;
+        cls(b, 'on', on);
+        b.setAttribute('aria-pressed', on ? 'true' : 'false');
+      });
+      opBtns.forEach(function (b) {
+        var o = b.getAttribute('data-op'), f = fig(S.view, l, o), n = b.querySelector('.kd-n');
+        b.disabled = !f;
+        cls(b, 'on', o === op);
+        b.setAttribute('aria-pressed', o === op ? 'true' : 'false');
+        if (n) { n.textContent = f && o !== 'main' ? ' ' + f.count : ''; }
+      });
+      if (labelEl) {
+        labelEl.textContent = labelOf[l] + (S.view === 'path' ? ' · 経路' : '') +
+          (op !== 'main' && F ? ' · ' + F.caption : '');
+      }
+      if (entryEl) {
+        clear(entryEl);
+        groups = entryInto(entryEl, l);
+      } else if (order.length > 1) {
+        groups = sources(l);
+      }
+      S.held = {};
+      groups.forEach(function (g) { g.held.forEach(function (k) { S.held[k] = true; }); });
+      paint();
+      fit();
+      showDetail();
+    }
+    function goTo(i) {
+      if (i === undefined || i === null || i < 0 || i >= order.length) { return; }
+      S.i = i;
+      render();
+    }
+
+    function keyOf(t) {
+      while (t && t !== stage) {
+        if (t.kdInfo) { return t; }
+        t = t.parentNode;
+      }
+      return null;
+    }
+    stage.addEventListener('mouseover', function (e) {
+      var ke = keyOf(e.target);
+      if (!ke || ke.kdInfo.k === S.hover) { return; }
+      S.hover = ke.kdInfo.k;
+      paint();
+      if (S.pin === null) { showDetail(); }
+    });
+    stage.addEventListener('mouseleave', function () {
+      if (S.hover === null) { return; }
+      S.hover = null;
+      paint();
+      if (S.pin === null) { showDetail(); }
+    });
+    stage.addEventListener('click', function (e) {
+      var ke = keyOf(e.target), info;
+      if (!ke) { return; }
+      info = ke.kdInfo;
+      if (info.to !== null && own(posOf, info.to) && (canHover || S.pin === info.k)) {
+        goTo(posOf[info.to]);
+        return;
+      }
+      S.pin = S.pin === info.k ? null : info.k;
+      paint();
+      showDetail();
+    });
+    tabs.forEach(function (b) {
+      b.addEventListener('click', function () { goTo(posOf[b.getAttribute('data-l')]); });
+    });
+    viewBtns.forEach(function (b) {
+      b.addEventListener('click', function () { S.view = b.getAttribute('data-view'); render(); });
+    });
+    opBtns.forEach(function (b) {
+      b.addEventListener('click', function () {
+        if (!b.disabled) { S.op = b.getAttribute('data-op'); render(); }
+      });
+    });
+    D.addEventListener('keydown', function (e) {
+      var key = e.key, code = e.keyCode, n = order.length;
+      if (e.ctrlKey || e.altKey || e.metaKey) { return; }
+      if (key === 'ArrowRight' || key === 'Right' || code === 39) {
+        goTo((S.i + 1) % n);
+      } else if (key === 'ArrowLeft' || key === 'Left' || code === 37) {
+        goTo((S.i + n - 1) % n);
+      } else if (key === 'Escape' || key === 'Esc' || code === 27) {
+        if (S.pin === null) { return; }
+        S.pin = null;
+        paint();
+        showDetail();
+      } else if ((key === 'v' || key === 'V') && views.path) {
+        S.view = S.view === 'key' ? 'path' : 'key';
+        render();
+      } else if (key && key.length === 1 && key >= '0' && key <= '9' && own(posOf, key)) {
+        goTo(posOf[key]);
+      } else {
+        return;
+      }
+      e.preventDefault();
+    });
+    if (window.ResizeObserver) {
+      new window.ResizeObserver(refit).observe(stage);
+    } else {
+      window.addEventListener('resize', refit);
+    }
+    window.addEventListener('load', refit);
+    render();
+  }
+
+  function boot() {
+    if (R.getAttribute('data-kd-init')) { return; }
+    R.setAttribute('data-kd-init', '1');
+    try {
+      init();
+    } catch (e) {
+      R.className = R.className.replace(/(^|\s)kd-js(?=\s|$)/g, ' ');
+      if (window.console && window.console.error) { window.console.error(e); }
+    }
+  }
+  if (D.querySelector('.kd-detail')) { boot(); } else { D.addEventListener('DOMContentLoaded', boot); }
+})();
+"""
+
+
+def _viewer_js() -> str:
+    return _VIEWER_JS.replace('__OPS__', json.dumps(list(OPS), ensure_ascii=False))
+
+
+def _html_viewer_body(layers_data: list[tuple[str, list[str]]], key_entries, path_entries,
+                      *, title=None) -> list[str]:
+    """Page body of the one-screen viewer (see the section comment above):
+    header with the controls (.kd-ui, hidden without JavaScript), the stage with
+    the レイアウト図 view and (with path figures) the 経路 view, each holding one
+    block per layer, then the detail panel and the script."""
+    single = len(layers_data) == 1
+    multi = len(key_entries) > 1
+    if single:
+        layer_name, bindings = layers_data[0]
+        h1 = f'{layer_name} レイヤー キー割り当て一覧'
+        intro = f'※ {len(bindings)} 個のバインディング位置を 1 ファイルに集約。'
+    else:
+        h1 = title or 'キー割り当て一覧'
+        intro = f'※ {len(layers_data)} 個のレイヤーのキー割り当てを 1 ファイルに集約。'
+    intro += ('キーの動作は「レイアウト図」、バインディングの解決経路は「経路」で確認する。' if path_entries
+              else 'キーの動作は「レイアウト図」で確認する。')
+    intro += 'JavaScript が動くブラウザでは、レイヤーを切り替えながら 1 画面で見る表示になる。'
+
+    # Op buttons: main, the Tap Dance / Mod Morph ops, then extra-figure captions.
+    seen = [op for entries in (key_entries, path_entries)
+            for _, _, figs in entries for op, _, _ in figs]
+    ops = ['main'] + [op for op in EXTRA_OP_HEADING if op in seen]
+    for op in seen:
+        if op not in ops:
+            ops.append(op)
+
+    hint = []
+    if multi:
+        hint.append('← / →・0-9: レイヤー')
+    if path_entries:
+        hint.append('V: キー / 経路')
+    hint.append('Esc: 固定を解除')
+
+    out = ['<header class="kd-head">', '<div class="kd-top">', f'<h1>{_html_inline(h1)}</h1>']
+    if path_entries:
+        out.append('<span class="kd-ui kd-seg kd-views" role="group" aria-label="表示">'
+                   '<button type="button" data-view="key">キー</button>'
+                   '<button type="button" data-view="path">経路</button></span>')
+    out.append(f'<span class="kd-ui kd-hint">{_html_text("　".join(hint))}</span>')
+    out.append('</div>')
+    out.append('<p class="kd-intro">' + _html_inline(intro) + '</p>')
+    if multi:
+        out.append('<nav class="kd-ui kd-tabs" role="tablist" aria-label="レイヤー">')
+        for idx, name, _ in key_entries:
+            label = _layer_label(idx, name)
+            short, _, rest = label.partition(' ')
+            inner = _html_text(short) + (f' <span class="kd-tn">{_html_text(rest)}</span>' if rest else '')
+            out.append(f'<button type="button" role="tab" data-l="{idx}" '
+                       f'title="{_html_attr(label)}">{inner}</button>')
+        out.append('</nav>')
+    # Button text: the op itself ('Key Override: Shift+' -> 'Shift+', like the
+    # ZMK Mod Morph button); the full caption goes to the tooltip.
+    short = {op: op.rsplit(': ', 1)[-1] for op in ops[1:]}
+    if len(set(short.values())) != len(short):
+        short = {op: op for op in ops[1:]}
+    if len(ops) > 1 or multi:
+        out.append('<div class="kd-ui kd-bar">')
+        if len(ops) > 1:
+            out.append('<span class="kd-seg kd-ops" role="group" aria-label="操作">')
+            for op in ops:
+                text = 'タップ / ホールド' if op == 'main' else short[op]
+                caption = EXTRA_OP_HEADING.get(op, op)
+                tip = '' if op == 'main' else f' title="{_html_attr(caption)}"'
+                out.append(f'<button type="button" data-op="{_html_attr(op)}"{tip}>'
+                           f'{_html_text(text)}<span class="kd-n"></span></button>')
+            out.append('</span>')
+        if multi:
+            out.append('<span class="kd-entry"></span>')
+        out.append('</div>')
+    out.append('</header>')
+
+    out.append('<main class="kd-stage">')
+    out.append('<div class="kd-label"></div>')
+    for view, heading, intro_text, entries in (
+            ('key', 'レイアウト図', _LAYOUT_FIGURE_INTRO, key_entries),
+            ('path', '経路', _PATH_FIGURE_INTRO, path_entries)):
+        if not entries:
+            continue
+        out.append(f'<section class="kd-view" data-view="{view}">')
+        out.append(f'<h2>{_html_inline(heading)}</h2>')
+        out.append('<p class="kd-intro">' + _html_inline(intro_text) + '</p>')
+        out += _html_layer_blocks(entries)
+        out.append('</section>')
+    out.append('</main>')
+    out.append('<footer class="kd-detail"></footer>')
+    out.append('<script>')
+    out.append(_viewer_js().rstrip('\n'))
+    out.append('</script>')
+    return out
+
+
 def write_html(layers_data: list[tuple[str, list[str]]],
                behaviors: dict, macros: dict, output_path: Path,
                grid, display_cols, geom=None, unit=None,
                *, resolver=resolve, title=None, show_path=True,
-               path_key_px=PATH_KEY_PX, extra_figures=None) -> None:
+               path_key_px=PATH_KEY_PX, extra_figures=None, layer_indices=None) -> None:
     """Generate one standalone HTML file.
-    Single layer  => H1 layer title, then H2 レイアウト図 / H2 経路.
-    Multi layers  => H1 top title, H2 レイアウト図 (one row per layer), then H2 経路.
-    動作 tables are not emitted: the layout figure (key caps + hover tooltips)
-    already shows the same resolved-action information. The 経路 section uses
-    the same physical-layout figures (at double key size) showing each key's
-    behavior-resolution path; the legacy 経路 table is kept only as a fallback
-    when no usable physical-layout geometry is available."""
-    body: list[str] = []
 
-    # Both sections share the figure machinery; they all come out empty when
-    # there is no usable geometry, in which case the 経路 table is the fallback.
-    figure_table = _html_figure_table(layers_data, behaviors, macros, geom, unit,
-                                      resolver=resolver, extra_figures=extra_figures)
-    path_figures = _html_figure_table(layers_data, behaviors, macros, geom, unit,
-                                      mode='path', resolver=resolver,
-                                      path_key_px=path_key_px, extra_figures=extra_figures)
-
-    if len(layers_data) == 1:
-        layer_name, bindings = layers_data[0]
-        body.append(f'<h1>{_html_inline(f"{layer_name} レイヤー キー割り当て一覧")}</h1>')
-        if path_figures:
-            body.append('<p>' + _html_inline(
-                f'※ {len(bindings)} 個のバインディング位置を 1 ファイルに集約。'
-                f'キーの動作は実機の物理配列に合わせた「レイアウト図」セクションで確認し、'
-                f'バインディングの解決経路は「経路」セクションで確認する。'
-            ) + '</p>')
-        else:
-            body.append('<p>' + _html_inline(
-                f'※ {len(bindings)} 個のバインディング位置を 1 表に集約。'
-                f'実機の物理配列に合わせて「Row N」セクション行 + 操作行を縦に並べる（左右分割は中央の空列で分離）。'
-            ) + '</p>')
-            body.append('<ul>')
-            for bullet in _TABLE_FALLBACK_BULLETS:
-                body.append('<li>' + _html_inline(bullet) + '</li>')
-            body.append('</ul>')
-        if figure_table:
-            body.append(f'<h2>{_html_inline("レイアウト図")}</h2>')
-            body.append('<p>' + _html_inline(_LAYOUT_FIGURE_INTRO) + '</p>')
-            body += figure_table
-        # 経路: figure form preferred; table only as the no-geometry fallback.
-        if show_path:
-            body.append(f'<h2>{_html_inline("経路")}</h2>')
-            if path_figures:
-                body.append('<p>' + _html_inline(_PATH_FIGURE_INTRO) + '</p>')
-                body += path_figures
-            else:
-                header, rows = _build_layer_mode_table(bindings, behaviors, macros, 'path',
-                                                       grid, display_cols)
-                if header is not None:
-                    body += _html_table_lines(header, rows)
+    With usable physical-layout geometry it is the one-screen viewer (see the
+    section comment above _html_viewer_body): the レイアウト図 view (resolved
+    actions) and, with `show_path`, the 経路 view (behavior-resolution paths,
+    path_key_px keys), one block per layer with its Tap Dance / Mod Morph /
+    `extra_figures` figures. Without geometry it is the legacy 経路 table.
+    `layer_indices` are the real layer numbers of layers_data (default: looked
+    up in LAYER_NAMES_BY_INDEX); tabs, digit keys and layer-key links use them.
+    動作 tables are not emitted: the figures (key caps + the viewer's detail
+    panel / hover tooltips) already show the same resolved-action information.
+    The file is UTF-8 with LF line endings on every platform."""
+    common = dict(resolver=resolver, path_key_px=path_key_px,
+                  extra_figures=extra_figures, layer_indices=layer_indices)
+    key_entries = _layer_figures(layers_data, behaviors, macros, geom, unit, 'action', **common)
+    if key_entries:
+        path_entries = (_layer_figures(layers_data, behaviors, macros, geom, unit, 'path', **common)
+                        if show_path else [])
+        body = _html_viewer_body(layers_data, key_entries, path_entries, title=title)
+        style = HTML_STYLE + HTML_VIEWER_STYLE
+        head_script = "<script>document.documentElement.className+=' kd-js'</script>\n"
     else:
-        body.append(f'<h1>{_html_inline(title or "キー割り当て一覧")}</h1>')
-        if show_path:
-            intro = (f'※ {len(layers_data)} 個のレイヤーのキー割り当てを 1 ファイルに集約。'
-                     f'各レイヤーの動作は実機の物理配列に合わせた「レイアウト図」セクションで確認し、'
-                     f'バインディングの解決経路は「経路」セクションで確認する。')
-        else:
-            intro = (f'※ {len(layers_data)} 個のレイヤーのキー割り当てを 1 ファイルに集約。'
-                     f'各レイヤーの動作は実機の物理配列に合わせた「レイアウト図」セクションで確認する。')
-        body.append('<p>' + _html_inline(intro) + '</p>')
-        if not path_figures:
-            body.append('<ul>')
-            for bullet in _TABLE_FALLBACK_BULLETS:
-                body.append('<li>' + _html_inline(bullet) + '</li>')
-            body.append('</ul>')
-
-        # Visual physical-layout figures, collected into one big table:
-        # one row per layer, every figure of that layer in the same cell.
-        if figure_table:
-            body.append(f'<h2>{_html_inline("レイアウト図")}</h2>')
-            body.append('<p>' + _html_inline(_LAYOUT_FIGURE_INTRO) + '</p>')
-            body += figure_table
-
-        # 経路: figure form preferred; table only as the no-geometry fallback.
-        if show_path and path_figures:
-            body.append(f'<h2>{_html_inline("経路")}</h2>')
-            body.append('<p>' + _html_inline(_PATH_FIGURE_INTRO) + '</p>')
-            body += path_figures
-        elif show_path:
-            body.append(f'<h2>{_html_inline("経路")}</h2>')
-            # Positions that are `&none` in the DEFAULT layer are inactive and
-            # hidden in every layer's table.
-            active_indices = _compute_active_indices(layers_data)
-
-            # Merge every layer's rows into a single table so the column widths
-            # (which the browser auto-sizes per-table) line up across layers.
-            shared_header: list[str] | None = None
-            layer_blocks: list[tuple[str, list[dict]]] = []
-            for layer_name, bindings in layers_data:
-                header, rows = _build_layer_mode_table(bindings, behaviors, macros, 'path',
-                                                       grid, display_cols,
-                                                       active_indices=active_indices)
-                if header is None:
-                    continue
-                shared_header = header
-                layer_blocks.append((layer_name, rows))
-            if shared_header is not None:
-                body += _html_table_open(shared_header)
-                for layer_name, rows in layer_blocks:
-                    body.append(_html_layer_row(layer_name, len(shared_header)))
-                    body += _html_body_rows(rows)
-                body += _html_table_close()
+        body = _html_table_fallback_body(layers_data, behaviors, macros, grid, display_cols,
+                                         title=title, show_path=show_path)
+        style = HTML_STYLE
+        head_script = ''
 
     html = (
         '<!DOCTYPE html>\n<html lang="ja">\n<head>\n'
         '<meta charset="utf-8">\n'
         '<meta name="viewport" content="width=device-width, initial-scale=1">\n'
         '<title>' + _html_text(title or 'キー割り当て一覧') + '</title>\n<style>\n'
-        + HTML_STYLE + '</style>\n</head>\n<body>\n'
+        + style + '</style>\n' + head_script + '</head>\n<body>\n'
         + '\n'.join(body)
         + '\n</body>\n</html>\n'
     )
-    output_path.write_text(html, encoding='utf-8')
+    output_path.write_text(html, encoding='utf-8', newline='\n')
 
 
 # ============================================================================

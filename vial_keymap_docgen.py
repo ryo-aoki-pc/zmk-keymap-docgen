@@ -2,9 +2,11 @@
 """Generate a physical-layout KEYMAP-vial.html from a QMK/Vial keymap.
 
 This reuses keymap_docgen.py's figure renderer (so the output looks/behaves like
-the ZMK KEYMAP.html: every layer drawn on the real physical layout, tap on the
-key cap, hold below, full operation list in the hover tooltip), but drives it
-with a QMK/Vial keycode resolver instead of the ZMK one.
+the ZMK KEYMAP.html: a one-screen viewer with one tab per layer, every layer
+drawn on the real physical layout, tap on the key cap, hold below, every
+operation in the detail panel), but drives it with a QMK/Vial keycode resolver
+instead of the ZMK one. Tabs and layer-key links use the real QMK layer numbers
+(write_html's layer_indices), even when empty layers are skipped.
 
 Two keymap input modes (auto-detected from the file extension, override with
 --format):
@@ -509,6 +511,15 @@ def overrides_default_map(overrides: list[dict], num_layers: int) -> dict:
     return m
 
 
+_LAYER_NAME_RE = re.compile(r'Layer\s+(\d+)$')
+
+
+def layer_index_of(name: str, default: int) -> int:
+    """Real layer number of a 'Layer <n>' layer name (else `default`)."""
+    m = _LAYER_NAME_RE.match(name)
+    return int(m.group(1)) if m else default
+
+
 def make_override_figures(vil_layout, matrix: list[tuple[int, int]], overrides: list[dict]):
     """Return an extra_figures(layer_name, bindings) callable that yields, per layer,
     a ('Key Override: <cond>', op_bindings) figure for each non-default condition
@@ -520,10 +531,9 @@ def make_override_figures(vil_layout, matrix: list[tuple[int, int]], overrides: 
     conds.sort(key=lambda c: {'Shift+': 0, 'Ctrl+': 1}.get(c, 2))
 
     def figures(layer_name, bindings):
-        m = re.match(r'Layer\s+(\d+)$', layer_name)
-        if not m:
+        L = layer_index_of(layer_name, -1)
+        if L < 0:
             return []
-        L = int(m.group(1))
         rows = vil_layout[L]
         result = []
         for cond in conds:
@@ -835,7 +845,8 @@ def main(argv=None) -> int:
     kd.write_html(layers_data, {}, {}, out_path, grid, display_cols, geom, unit,
                   resolver=qmk_resolver, title=args.title or out_path.stem,
                   show_path=not args.no_path, path_key_px=args.path_key_px,
-                  extra_figures=extra_figures)
+                  extra_figures=extra_figures,
+                  layer_indices=[layer_index_of(n, i) for i, (n, _) in enumerate(layers_data)])
     print(f'saved: {out_path}')
     return 0
 
