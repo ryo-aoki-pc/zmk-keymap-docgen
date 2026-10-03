@@ -242,7 +242,7 @@ def test_path_key_px_scales_path_figure():
     resolver = v.make_qmk_resolver()
 
     def kb_width(pkpx):
-        html = '\n'.join(kd._html_figure_table(layers, {}, {}, geom, unit,
+        html = '\n'.join(kd._html_figure_view(layers, {}, {}, geom, unit,
                          mode='path', resolver=resolver, path_key_px=pkpx))
         return float(re.search(r'class="kb path" style="width:([0-9.]+)px', html).group(1))
 
@@ -257,12 +257,17 @@ def test_vial_main_path_section_default_and_no_path(tmp_path):
     layout.write_text(json.dumps(
         {'layouts': {'LAYOUT': {'layout': [{'x': 0, 'y': 0}, {'x': 1, 'y': 0}]}}}))
     out = tmp_path / 'out.html'
-    # 経路 included by default (like ZMK).
+    # 経路 included by default (like ZMK): the 経路 view and its toggle button.
     assert v.main([str(kc), '--layout', str(layout), '-o', str(out)]) == 0
-    assert '<h2>経路</h2>' in out.read_text()
-    # --no-path omits it.
+    html = out.read_text(encoding='utf-8')
+    assert '<h2>経路</h2>' in html
+    assert '<section class="kd-view" data-view="path">' in html
+    assert '<button type="button" data-view="path">' in html
+    # --no-path omits the view and the toggle.
     assert v.main([str(kc), '--layout', str(layout), '-o', str(out), '--no-path']) == 0
-    assert '<h2>経路</h2>' not in out.read_text()
+    html = out.read_text(encoding='utf-8')
+    assert '<h2>経路</h2>' not in html
+    assert 'data-view="path"' not in html
 
 
 def test_vil_key_overrides_parse_and_render():

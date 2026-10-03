@@ -5,24 +5,23 @@ Generate human-readable key-assignment docs (Excel **.xlsx** + a self-contained
 `&kp`, `&mt` (mod-tap), `&lt` (layer-tap), `&mo`/`&to` (layers), mod-morph,
 tap-dance and macros — resolves them recursively, and lays every layer out to
 match the board's real physical arrangement (including the split gap). The
-`.html` additionally renders each layer as a **visual layout figure** — keys
-positioned by their real coordinates (so column stagger, the split gap and key
-rotation all show), with the tap action on the cap, the hold action below it,
-and every operation in a hover tooltip. The figures are collected into a single
-table: one row per layer, with the layer name in the left header cell and every
-figure belonging to that layer — the main figure plus its Tap Dance / Mod Morph
-figures — stacked together in the right cell. Key-cap text on the figure is kept
-compact without losing information: layer jumps show as `L<n>` instead of the
-layer node name, and macro chains are stacked one step per line with the font
-size shrinking automatically so the full content fits inside the key box.
+`.html` renders each layer as a **visual layout figure** — keys positioned by
+their real coordinates (so column stagger, the split gap and key rotation all
+show), with the tap action on the cap and the hold action below it. Key-cap
+text is kept compact without losing information: layer jumps show as `L<n>`
+instead of the layer node name, and macro chains are stacked one step per line
+with the font size shrinking automatically so the full content fits inside the
+key box.
 
-The HTML's **経路 (resolution path) section** uses the same physical-layout
-figure style: each key cap shows its behavior-resolution chain
-(`behavior[index] ▸ … ▸ final binding`) at double key size so the longer path
-strings stay readable, with extra figures for operations whose path diverges
-(Tap Dance / Mod Morph) and the full per-operation paths in hover tooltips.
-When no usable layout geometry is available, the section falls back to the
-legacy table form.
+The `.html` is a self-contained **one-screen viewer** (see
+[The HTML viewer](#the-html-viewer)): one layer at a time, scaled to fit the
+window, switched with tabs or the keyboard, with the Tap Dance / Mod Morph
+figures and the **経路 (resolution path) view** — each key cap showing its
+behavior-resolution chain (`behavior[index] ▸ … ▸ final binding`) at double key
+size — a button away, and a detail panel listing every operation of the key
+under the mouse. Without JavaScript the same figures are simply stacked, layer
+by layer. When no usable layout geometry is available, the 経路 falls back to
+the legacy table form.
 
 The script itself contains **no keyboard-specific data**. Everything particular
 to a board — each key's physical position *and its display label* — lives in a
@@ -57,6 +56,47 @@ python keymap_docgen.py config/MyBoard.keymap -l tools/MyBoard.layout.json -o KE
 # Only specific layers:
 python keymap_docgen.py config/MyBoard.keymap DEFAULT LOWER -l tools/MyBoard.layout.json -o KEYMAP.xlsx
 ```
+
+## The HTML viewer
+
+The `.html` needs no server and no network: open it from disk, or through
+`https://htmlpreview.github.io/?https://github.com/<owner>/<repo>/blob/<branch>/KEYMAP.html`.
+It fills the browser window and never scrolls the page:
+
+- **Header** — the layer tabs (`L<n> <name>`), the キー / 経路 view toggle, the op
+  toggle (タップ / ホールド, plus ダブルタップ / Shift+ / Ctrl+ — or a Vial
+  `Key Override: …` — when a layer has such figures; each button shows how many
+  keys are assigned, and is disabled on layers without that figure) and the
+  **入り方** line: the keys in other layers that switch to this one (e.g.
+  `L0 BASE_QWERTY の SPACE (長押し)`). Keys you keep holding while using the
+  layer (`&lt` / `&mo`) are also outlined in green on the figure.
+- **Stage** — the one figure for the current layer / view / op, scaled to fit
+  (up to 2x; below 0.5x the stage scrolls instead). Keys that switch layer carry
+  a `↗` mark.
+- **Detail panel** — for the key under the mouse: every operation's action and
+  resolution path (auto-derived forms such as `A×2` / `⇧A` greyed), the raw
+  binding, and the same physical key on every layer.
+
+| Input | Effect |
+|---|---|
+| hover a key | show it in the detail panel |
+| click a key | pin it in the panel (click again or `Esc` to unpin) |
+| click a `↗` key | go to the layer it switches to (touch: first tap pins, second tap goes) |
+| `←` / `→` | previous / next layer |
+| `0`–`9` | layer with that number |
+| `V` | toggle キー / 経路 |
+| tab, 入り方 / 各レイヤー chips | go to that layer |
+
+Notes:
+
+- Without JavaScript (or if the script fails) every layer block is stacked —
+  the レイアウト図 view, then the 経路 view — with the full per-operation text
+  in hover tooltips. Printing from the viewer prints the current figure.
+- The page also works on htmlpreview.github.io, which injects a `<base href>`
+  and re-creates inline scripts: the script therefore never uses anchors, the
+  History API or `location`, and never contains `<script`, `</` or `<!--`.
+- The output is deterministic and written with LF line endings on every OS, so
+  a local regeneration matches CI byte for byte.
 
 ## Layout JSON schema
 
@@ -129,6 +169,9 @@ Action can then regenerate the docs on every keymap change:
 - run: python tools/keymap-docgen/keymap_docgen.py config/MyBoard.keymap \
          -l tools/MyBoard.layout.json -o KEYMAP.xlsx
 ```
+
+Link the viewer from the README with
+`https://htmlpreview.github.io/?https://github.com/<owner>/<repo>/blob/<branch>/KEYMAP.html`.
 
 ## Extract to a standalone repo / git submodule
 
@@ -280,6 +323,10 @@ than the setting. Unknown QSIDs are emitted as `uint8_t` with a warning.
 pip install pytest && python -m pytest tests/ -v
 ```
 
+`tests/test_keymap_html_viewer.py` covers the HTML viewer (page structure, the
+key data attributes, layer-jump detection, htmlpreview-safe ES5 script — run
+through `node --check` when Node.js is installed).
+
 ## Vial / QMK keymaps (`vial_keymap_docgen.py`)
 
 The same physical-layout HTML can be generated for a **QMK/Vial** keymap, so a
@@ -312,22 +359,27 @@ python vial_keymap_docgen.py path/to/KEYMAP.vil --format vil \
   `keymap.c` `LAYOUT` arguments) or Vial `vial.json` / VIA `via.json` (KLE,
   matrix-indexed; pick the layout option with `--layout-variant`, default the
   `.vil`'s `layout_options`). A `keymap_docgen` physical-layout JSON also works.
-* **経路 (path) section** — like the ZMK `KEYMAP.html`, a 経路 section showing
-  each key's raw keycode (`MT(MOD_LCTL, KC_A)`, `LT(2, KC_SPACE)`, `TD(1)` …) is
+* **経路 (path) view** — like the ZMK `KEYMAP.html`, a 経路 view showing each
+  key's raw keycode (`MT(MOD_LCTL, KC_A)`, `LT(2, KC_SPACE)`, `TD(1)` …) is
   included by default. It is rendered at the layout key size (compact), since
-  QMK tokens are short; pass `--no-path` to omit it, or `--path-key-px` to resize.
+  QMK tokens are short; pass `--no-path` to omit it (and its toggle), or
+  `--path-key-px` to resize.
 * **Key overrides** — a `.vil`'s `key_override` entries (which `zmk_to_vial.py`
   produces from ZMK mod-morphs) render like the ZMK mod-morph figures: a per-mod
   `Key Override: Shift+` / `Key Override: Ctrl+` figure is added to each layer (in
-  both sections), and a carrier key's cap shows its no-modifier output.
+  both views, behind the Shift+ / Ctrl+ op buttons), and a carrier key's cap
+  shows its no-modifier output.
+* **Layer numbers** — tabs, digit keys and the `↗` layer keys use the real QMK
+  layer numbers, even when empty `.vil` layers are skipped (passed to
+  `keymap_docgen.write_html` as `layer_indices`).
 * **Macros & tap dances** — a `.vil`'s `macro` contents are shown in place of the
   `Mn` label (held-modifier spans compressed, e.g. `Home ▸ ⇧End ▸ ⌃X`), and a tap
   dance's double-tap action becomes its own `Tap Dance: ダブルタップ` figure
   (like ZMK), with the on-double-tap action (often a macro) shown there.
 
-The ZMK path is unchanged — the new resolver/title/path/extra_figures parameters
-on `keymap_docgen.write_html` default to the existing behaviour (covered by a
-regression test).
+The ZMK path is unchanged — the resolver/title/path/extra_figures/layer_indices
+parameters on `keymap_docgen.write_html` default to the ZMK behaviour (covered
+by a regression test).
 
 ## License
 
